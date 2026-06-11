@@ -9,6 +9,13 @@ BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if BASE_DIR not in sys.path:
     sys.path.insert(0, BASE_DIR)
 
+from config import (
+    format_location_home,
+    location_configured,
+    parse_lat_lon_pair,
+    reload_location_override,
+    set_location_home,
+)
 from utilities.fr24_client import FR24Client
 
 # Singleton FR24Client shared across all web requests (shares cache + rate limiter)
@@ -150,6 +157,39 @@ def tracked_lookup():
         return jsonify({"found": False, "error": "No callsign provided"})
     result = lookup_flight(callsign)
     return jsonify(result)
+
+
+@app.get("/location/json")
+def location_json():
+    reload_location_override()
+    if not location_configured():
+        return jsonify({"location": "", "configured": False})
+    return jsonify({
+        "location": format_location_home(),
+        "configured": True,
+    })
+
+
+@app.post("/location/set")
+def location_set():
+    data = request.get_json(force=True)
+    if not data:
+        return jsonify({"message": "Invalid request"}), 400
+    raw = data.get("location", "").strip()
+    if not raw:
+        return jsonify({"message": "Enter coordinates as latitude, longitude"}), 400
+    try:
+        lat, lon = parse_lat_lon_pair(raw)
+    except ValueError as exc:
+        return jsonify({"message": str(exc)}), 400
+    try:
+        set_location_home(lat, lon)
+        return jsonify({
+            "message": f"Radar center saved: {format_location_home()}",
+            "location": format_location_home(),
+        })
+    except Exception as e:
+        return jsonify({"message": f"Error saving location: {e}"}), 500
 
 
 @app.post("/tracked/set")

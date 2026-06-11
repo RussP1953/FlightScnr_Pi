@@ -14,6 +14,9 @@ from display.round_touch import color_presets, draw, nav, settings, theme
 PAGE_MAIN = 0
 PAGE_DISPLAY = 1
 PAGE_COLORS = 2
+PAGE_COUNT = 3
+
+FOOTER_BUTTONS = ("prev", "next", "radar")
 
 
 def _hostname():
@@ -40,41 +43,49 @@ def _breadcrumb(page: int) -> list[str]:
     return trail
 
 
-def _footer_hints(page: int, *, scrollable: bool = False) -> list[str]:
-    if page == PAGE_MAIN:
-        if scrollable:
-            return ["← page", "↕ scroll", "radar →"]
-        return ["← page", "radar →"]
-    if page == PAGE_DISPLAY:
-        return ["tap to change", "← back"]
-    if page == PAGE_COLORS:
-        if scrollable:
-            return ["tap to change", "↕ scroll", "← back"]
-        return ["tap to change", "← back"]
-    return ["tap to change", "← back"]
+def prev_page(page: int) -> int | None:
+    if page > PAGE_MAIN:
+        return page - 1
+    return None
+
+
+def next_page(page: int) -> int | None:
+    if page < PAGE_COLORS:
+        return page + 1
+    return None
+
+
+def tap_footer_action(x: int, y: int) -> str | None:
+    idx = nav.tap_footer_button(x, y, len(FOOTER_BUTTONS))
+    if idx is None:
+        return None
+    return FOOTER_BUTTONS[idx]
+
+
+def _theme_row_metrics() -> tuple[int, int, int, int]:
+    """Return swatch_size, row_h, max_label_w, block_w for aligned theme rows."""
+    body_font = draw.load_font(theme.FONT_BODY)
+    swatch_size = theme.s(20)
+    swatch_gap = theme.s(10)
+    max_label_w = max(body_font.size(name)[0] for name in color_presets.THEME_NAMES)
+    row_h = max(swatch_size, body_font.get_height()) + theme.s(6)
+    block_w = swatch_size + swatch_gap + max_label_w
+    return swatch_size, row_h, max_label_w, block_w
 
 
 def _theme_layout(scroll_offset: int) -> tuple[int, int, int]:
     top = nav.content_top_y(has_dots=True)
-    title_font = draw.load_font(theme.FONT_TITLE, bold=True)
-    title_h = title_font.get_height() + theme.s(6)
-    body_font = draw.load_font(theme.FONT_BODY)
-    row_h = max(theme.s(24), body_font.get_height()) + theme.s(4)
-    return top + title_h - scroll_offset, row_h, color_presets.THEME_COUNT
+    _, row_h, _, _ = _theme_row_metrics()
+    return top + theme.s(4) - scroll_offset, row_h, color_presets.THEME_COUNT
 
 
 def theme_row_at(x: int, y: int, scroll_offset: int = 0) -> int | None:
     row_y, row_h, count = _theme_layout(scroll_offset)
-    body_font = draw.load_font(theme.FONT_BODY)
+    _, _, _, block_w = _theme_row_metrics()
+    swatch_x = theme.CENTER_X - block_w // 2
     for i in range(count):
         ry = row_y + i * row_h
-        half = draw.circle_half_width_at_row(int(ry), body_font.get_height())
-        rect = pygame.Rect(
-            theme.CENTER_X - half,
-            ry - theme.s(2),
-            half * 2,
-            body_font.get_height() + theme.s(4),
-        )
+        rect = pygame.Rect(swatch_x, int(ry), block_w, row_h)
         if rect.collidepoint(x, y):
             return i
     return None
@@ -82,9 +93,8 @@ def theme_row_at(x: int, y: int, scroll_offset: int = 0) -> int | None:
 
 def _display_layout() -> tuple[int, int, int]:
     top = nav.content_top_y(has_dots=True)
-    title_font = draw.load_font(theme.FONT_TITLE, bold=True)
     body_font = draw.load_font(theme.FONT_BODY)
-    row_y = top + title_font.get_height() + theme.s(12)
+    row_y = top + theme.s(4)
     row_h = body_font.get_height() + theme.s(8)
     return row_y, row_h, 5
 
@@ -112,7 +122,6 @@ def draw_info(surface, page: int, scroll_offset: int = 0, display_focus: int = 0
     nav.draw_breadcrumb(surface, _breadcrumb(page))
     nav.draw_page_dots(surface, page, len(nav.SETTINGS_PAGES))
 
-    title_font = draw.load_font(theme.FONT_TITLE, bold=True)
     body_font = draw.load_font(theme.FONT_BODY)
     top = nav.content_top_y(has_dots=True)
     bottom = nav.content_bottom_y()
@@ -129,11 +138,7 @@ def draw_info(surface, page: int, scroll_offset: int = 0, display_focus: int = 0
         ]
         detail_font = draw.load_font(theme.FONT_DETAIL)
         gap = theme.s(2)
-        title_h = title_font.get_height() + theme.s(4)
-        title_y = top
-        title = title_font.render("Settings", True, theme.LABEL)
-        surface.blit(title, title.get_rect(midtop=(theme.CENTER_X, title_y)))
-        body_top = top + title_h
+        body_top = top + theme.s(4)
         max_scroll = nav.draw_lines_scrolled(
             surface,
             lines,
@@ -161,13 +166,12 @@ def draw_info(surface, page: int, scroll_offset: int = 0, display_focus: int = 0
             f"Min height: {settings.min_height_ft()} ft",
             f"Track stats: {track_mode}",
         ]
-        y0 = top
-        title = title_font.render("Display", True, theme.LABEL)
-        surface.blit(title, title.get_rect(midtop=(theme.CENTER_X, y0)))
-        y = y0 + title_font.get_height() + theme.s(12)
+        y = top + theme.s(4)
         row_h = body_font.get_height() + theme.s(8)
         for i, line in enumerate(rows):
             ry = y + i * row_h
+            if ry + body_font.get_height() > bottom:
+                break
             half = draw.circle_half_width_at_row(int(ry), body_font.get_height())
             rect = pygame.Rect(
                 theme.CENTER_X - half,
@@ -177,45 +181,36 @@ def draw_info(surface, page: int, scroll_offset: int = 0, display_focus: int = 0
             )
             if i == display_focus:
                 pygame.draw.rect(surface, theme.GRID, rect, 1)
-            draw.draw_center_line(surface, line, int(ry), body_font, theme.LABEL)
+            draw.draw_center_line(surface, line, int(ry), body_font, theme.MUTED)
 
     else:
         active = settings.theme_index()
-        title_h = title_font.get_height() + theme.s(6)
-        row_h = max(theme.s(24), body_font.get_height()) + theme.s(4)
-        total_h = title_h + color_presets.THEME_COUNT * row_h
+        swatch_size, row_h, max_label_w, block_w = _theme_row_metrics()
+        swatch_gap = theme.s(10)
+        total_h = theme.s(4) + color_presets.THEME_COUNT * row_h
         max_scroll = max(0, total_h - (bottom - top))
 
-        y = top - scroll_offset
-        if top <= y <= bottom:
-            title = title_font.render("Theme", True, theme.LABEL)
-            surface.blit(title, title.get_rect(midtop=(theme.CENTER_X, y)))
-        y += title_h
+        y = top + theme.s(4) - scroll_offset
+        swatch_x = theme.CENTER_X - block_w // 2
+        label_x = swatch_x + swatch_size + swatch_gap
+        text_h = body_font.get_height()
 
-        swatch_size = theme.s(20)
         for i, name in enumerate(color_presets.THEME_NAMES):
             ry = y + i * row_h
-            if ry + body_font.get_height() < top or ry > bottom:
+            if ry + row_h < top or ry > bottom:
                 continue
             palette = color_presets.THEMES[i]
             accent = palette["sweep"]
-            half = draw.circle_half_width_at_row(int(ry), body_font.get_height())
-            row_rect = pygame.Rect(
-                theme.CENTER_X - half,
-                ry - theme.s(2),
-                half * 2,
-                body_font.get_height() + theme.s(4),
-            )
+            row_rect = pygame.Rect(swatch_x, int(ry), block_w, row_h)
             if i == active:
                 pygame.draw.rect(surface, theme.GRID, row_rect, 1)
+            swatch_y = int(ry + (row_h - swatch_size) // 2)
+            text_y = int(ry + (row_h - text_h) // 2)
+            swatch_rect = pygame.Rect(swatch_x, swatch_y, swatch_size, swatch_size)
             label = body_font.render(name, True, theme.LABEL if i == active else theme.MUTED)
-            swatch_gap = theme.s(10)
-            block_w = swatch_size + swatch_gap + label.get_width()
-            sx = theme.CENTER_X - block_w // 2
-            swatch_rect = pygame.Rect(sx, int(ry), swatch_size, swatch_size)
-            surface.blit(label, (swatch_rect.right + swatch_gap, int(ry)))
+            surface.blit(label, (label_x, text_y))
             pygame.draw.rect(surface, accent, swatch_rect)
             pygame.draw.rect(surface, palette["grid"], swatch_rect, max(1, theme.s(2)))
 
-    nav.draw_footer(surface, _footer_hints(page, scrollable=max_scroll > 0))
+    nav.draw_footer_buttons(surface, list(FOOTER_BUTTONS))
     return max_scroll

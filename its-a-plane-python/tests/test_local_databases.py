@@ -257,6 +257,60 @@ class TestAirlinesModule:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# ICAO Aircraft Type Tests
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestIcaoTypesModule:
+    """Tests for utilities/icao_types.py."""
+
+    def _make_test_db(self, tmpdir):
+        db = {
+            "B752": "Boeing 757-200",
+            "B738": "Boeing 737-800",
+            "E75L": "Embraer ERJ-170-200 (long wing)",
+        }
+        cache_path = os.path.join(tmpdir, "icao_types.json")
+        with open(cache_path, "w") as f:
+            json.dump(db, f)
+        return cache_path, db
+
+    def test_get_icao_type_name_known(self):
+        import utilities.icao_types as icao_mod
+        tmpdir = tempfile.mkdtemp()
+        cache_path, db = self._make_test_db(tmpdir)
+
+        with patch.object(icao_mod, "CACHE_FILE", cache_path):
+            icao_mod._loaded = False
+            icao_mod._db = {}
+            assert icao_mod.get_icao_type_name("B752") == "Boeing 757-200"
+
+    def test_get_icao_type_name_case_insensitive(self):
+        import utilities.icao_types as icao_mod
+        tmpdir = tempfile.mkdtemp()
+        cache_path, db = self._make_test_db(tmpdir)
+
+        with patch.object(icao_mod, "CACHE_FILE", cache_path):
+            icao_mod._loaded = False
+            icao_mod._db = {}
+            assert icao_mod.get_icao_type_name("b738") == "Boeing 737-800"
+
+    def test_format_aircraft_type_unknown_falls_back_to_code(self):
+        import utilities.icao_types as icao_mod
+        tmpdir = tempfile.mkdtemp()
+        cache_path, db = self._make_test_db(tmpdir)
+
+        with patch.object(icao_mod, "CACHE_FILE", cache_path):
+            icao_mod._loaded = False
+            icao_mod._db = {}
+            assert icao_mod.format_aircraft_type("ZZ99") == "ZZ99"
+
+    def test_format_aircraft_type_empty(self):
+        import utilities.icao_types as icao_mod
+        assert icao_mod.format_aircraft_type("") == ""
+        assert icao_mod.format_aircraft_type("—") == ""
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # Integration: Pipeline Data Flow Tests
 # ═══════════════════════════════════════════════════════════════════════════════
 

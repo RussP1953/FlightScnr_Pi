@@ -8,6 +8,13 @@ from time import sleep, time
 from datetime import datetime
 from threading import Thread, Lock
 
+from utilities.airline_branding import (
+    AMBIGUOUS_REGIONALS,
+    IATA_TO_ICAO,
+    MARKETING_BRANDS,
+    marketing_brand_name,
+    resolve_logo_icao,
+)
 from utilities.fr24_client import FR24Client, LiveFlight
 from httpx import ConnectError, TimeoutException
 
@@ -83,36 +90,6 @@ HELICOPTER_TYPES = {
     "AS50", "AS55", "AS65", "H60", "BK17", "MD52", "MD50",
     "S92", "AW13", "AW16", "AW10", "B212", "B412",
     "EC45", "EC75", "S61", "S70", "H500", "BALL",
-}
-
-# Multi-brand regionals — these operators fly for multiple airlines.
-# For these, we use flight_number from flight_details to determine the
-# marketing brand (the airline the passenger bought the ticket from).
-AMBIGUOUS_REGIONALS = {
-    # US regionals
-    "RPA", "SKW", "ENY", "JIA", "EDV", "GJS", "CPZ", "ASQ", "PDT", "JZA",
-    # European regionals (operate under major carrier brands)
-    "CLH", "LHX", "DLA", "HOP", "KLC", "CFE", "ANE", "BCY", "EAI", "FCM", "GER",
-}
-
-# Marketing IATA prefix → brand display name
-MARKETING_BRANDS = {
-    # US
-    "UA": "United Airlines", "AA": "American Airlines", "DL": "Delta Air Lines",
-    "AS": "Alaska Airlines", "WN": "Southwest Airlines",
-    "B6": "JetBlue Airways", "NK": "Spirit Airlines", "F9": "Frontier Airlines",
-    # European
-    "LH": "Lufthansa", "BA": "British Airways", "AF": "Air France",
-    "KL": "KLM", "IB": "Iberia", "SK": "SAS", "EI": "Aer Lingus",
-    "AY": "Finnair", "AC": "Air Canada",
-}
-
-# IATA 2-letter → ICAO 3-letter (for logo file lookup)
-IATA_TO_ICAO = {
-    "AA": "AAL", "UA": "UAL", "DL": "DAL", "AS": "ASA", "WN": "SWA",
-    "B6": "JBU", "NK": "NKS", "F9": "FFT", "LH": "DLH", "BA": "BAW",
-    "AF": "AFR", "KL": "KLM", "IB": "IBE", "SK": "SAS", "EI": "EIN",
-    "AY": "FIN", "AC": "ACA",
 }
 
 BASE_DIR = os.path.dirname(os.path.dirname(__file__))
@@ -633,28 +610,18 @@ class Overhead:
                         flight_number = self.safe_get(d, "schedule_info", "flight_number", default="")
                         airline_name = self.safe_get(d, "aircraft_info", "registered_owners", default="")
 
-                        # Determine airline ICAO from callsign prefix
-                        owner_icao = f.airline_icao or ""
+                        callsign = f.callsign or ""
+                        airline_icao = resolve_logo_icao(
+                            operator_icao=f.airline_icao or "",
+                            flight_number=flight_number,
+                            callsign=callsign,
+                        )
+                        owner_icao = airline_icao
 
-                        # Marketing brand lookup for ambiguous regionals
-                        if owner_icao in AMBIGUOUS_REGIONALS and flight_number:
-                            # flight_number is like "AA4370" — extract IATA prefix
-                            iata_prefix = flight_number[:2] if len(flight_number) >= 3 else ""
-                            brand = MARKETING_BRANDS.get(iata_prefix, "")
-                            if brand:
-                                airline_name = brand
-                                # Update logo to match marketing brand
-                                brand_icao = IATA_TO_ICAO.get(iata_prefix)
-                                if brand_icao:
-                                    owner_icao = brand_icao
-                            else:
-                                # Fallback: use local DB or registered_owners
-                                local_airline = _airline_name_lookup(owner_icao)
-                                if local_airline:
-                                    airline_name = local_airline
-                                    stats["airline_lookups"] += 1
+                        brand = marketing_brand_name(flight_number) or marketing_brand_name(callsign)
+                        if brand:
+                            airline_name = brand
                         else:
-                            # Non-regional: use local DB if available
                             local_airline = _airline_name_lookup(owner_icao)
                             if local_airline:
                                 airline_name = local_airline
@@ -687,7 +654,6 @@ class Overhead:
 
                         origin = f.origin_airport_iata or ""
                         destination = f.destination_airport_iata or ""
-                        callsign = f.callsign or ""
 
                         t = self.safe_get(d, "time", default={})
                         time_sched_dep = self.safe_get(t, "scheduled", "departure")
@@ -769,6 +735,7 @@ class Overhead:
                             "plane_longitude": f.longitude,
                             "owner_iata": f.airline_iata or "N/A",
                             "owner_icao": owner_icao,
+                            "airline_icao": airline_icao,
                             "time_scheduled_departure": time_sched_dep,
                             "time_scheduled_arrival": time_sched_arr,
                             "time_real_departure": time_real_dep,
@@ -908,10 +875,19 @@ class Overhead:
                                 icao_pfx = IATA_TO_ICAO.get(sched_cs[:2])
                                 if icao_pfx:
                                     sched_cs = icao_pfx + sched_cs[2:]
+                            sched_number = sched.get("flight_number", tracked_callsign)
+                            airline_icao = resolve_logo_icao(
+                                operator_icao=sched_cs[:3] if len(sched_cs) >= 3 and sched_cs[:3].isalpha() else "",
+                                flight_number=sched_number,
+                                callsign=sched_cs,
+                            )
                             tracked_data = {
                                 "callsign": sched_cs,
-                                "number": sched.get("flight_number", tracked_callsign),
-                                "airline_name": "",
+                                "number": sched_number,
+                                "flight_number": sched_number,
+                                "airline_name": marketing_brand_name(sched_number) or "",
+                                "owner_icao": airline_icao,
+                                "airline_icao": airline_icao,
                                 "is_live": False,
                                 "is_scheduled": True,
                                 "origin": sched.get("origin", ""),
@@ -1129,10 +1105,28 @@ class Overhead:
             if not aircraft_type:
                 aircraft_type = self.safe_get(flight_details, "aircraft_info", "typecode", default="") or ""
 
+            flight_number = (
+                match.number
+                or self.safe_get(flight_details, "schedule_info", "flight_number", default="")
+                or ""
+            )
+            airline_icao = resolve_logo_icao(
+                operator_icao=match.airline_icao or "",
+                flight_number=flight_number,
+                callsign=flight_input,
+            )
+            owner_icao = airline_icao
+            brand = marketing_brand_name(flight_number) or marketing_brand_name(flight_input)
+            if brand:
+                airline_name = brand
+
             return {
                 "callsign": flight_input,
                 "number": match.number or flight_input,
+                "flight_number": flight_number,
                 "airline_name": airline_name,
+                "owner_icao": owner_icao,
+                "airline_icao": airline_icao,
                 "is_live": True,
                 "origin": match.origin_airport_iata or "",
                 "destination": match.destination_airport_iata or "",

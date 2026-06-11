@@ -1,6 +1,25 @@
 """Flight detail screen."""
 
 from display.round_touch import aircraft, draw, geo, logos, nav, settings, theme
+from utilities.airline_branding import display_flight_id_for_flight
+from utilities.icao_types import format_aircraft_type
+
+FOOTER_BUTTONS = ("prev", "next", "radar")
+FOOTER_EMPTY = ("radar",)
+
+
+def footer_labels(flights) -> tuple[str, ...]:
+    return FOOTER_BUTTONS if flights else FOOTER_EMPTY
+
+
+def tap_footer_action(x: int, y: int, flights) -> str | None:
+    labels = footer_labels(flights)
+    idx = nav.tap_footer_button(x, y, len(labels))
+    if idx is None:
+        return None
+    if not flights:
+        return "radar"
+    return ("prev", "next", "radar")[idx]
 
 
 def _format_speed(ground_speed) -> str | None:
@@ -33,8 +52,8 @@ def _draw_row(surface, text: str, y: int, font, color) -> int:
 
 
 def _draw_logo(surface, flight, y: int) -> int:
-    size = theme.s(36)
-    logo = logos.load_logo_surface(logos.icao_for_flight(flight), size)
+    logo_h = theme.s(36)
+    logo = logos.load_logo_surface(logos.icao_for_flight(flight), logo_h)
     if logo is None:
         return y
     rect = logo.get_rect(midtop=(theme.CENTER_X, y))
@@ -52,25 +71,23 @@ def draw_flight_detail(surface, flights, selected_index, scroll_offset: int = 0)
 
     if not flights:
         nav.draw_breadcrumb(surface, ["Radar", "Flight"])
-        nav.draw_footer(surface, ["→ radar"])
+        nav.draw_footer_buttons(surface, list(FOOTER_EMPTY))
         _draw_row(surface, "No aircraft", chrome_top, body_font, theme.MUTED)
         return 0
 
     idx = max(0, min(selected_index, len(flights) - 1))
     f = flights[idx]
-    callsign = f.get("callsign") or "—"
+    callsign = display_flight_id_for_flight(f)
     nav.draw_breadcrumb(surface, ["Radar", "Flight", callsign])
     nav.draw_page_dots(surface, idx, len(flights))
 
     airline = f.get("airline") or "Airline unknown"
     origin = f.get("origin") or "—"
     dest = f.get("destination") or "—"
-    plane_type = f.get("plane") or ""
+    plane_type = format_aircraft_type(f.get("plane") or "")
     alt = aircraft.format_altitude(f.get("altitude"))
 
     telemetry: list[str] = []
-    if plane_type and plane_type != "—":
-        telemetry.append(plane_type)
     if alt != "—":
         telemetry.append(alt)
     speed_str = _format_speed(f.get("ground_speed"))
@@ -91,6 +108,8 @@ def draw_flight_detail(surface, flights, selected_index, scroll_offset: int = 0)
         (airline, body_font, theme.MUTED),
         (f"{origin} > {dest}", body_font, theme.ROUTE),
     ]
+    if plane_type:
+        rows.append((plane_type, detail_font, theme.MUTED))
     if telemetry:
         rows.append(("  ·  ".join(telemetry), detail_font, theme.LABEL))
     if dist_line:
@@ -110,6 +129,5 @@ def draw_flight_detail(surface, flights, selected_index, scroll_offset: int = 0)
             _draw_row(surface, text, int(y), font, color)
         y += h + line_gap
 
-    footer = ["↕ scroll", "← next", "→ back"] if max_scroll > 0 else ["← next", "→ back"]
-    nav.draw_footer(surface, footer)
+    nav.draw_footer_buttons(surface, list(FOOTER_BUTTONS))
     return max_scroll

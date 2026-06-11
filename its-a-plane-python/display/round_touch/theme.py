@@ -66,6 +66,7 @@ FONT_CLOCK = s(64)
 FONT_CLOCK_AMPM = s(36)
 FONT_CARDINAL = s(23)
 FONT_TAG = s(21)
+FONT_TAG_SUB = s(17)
 
 
 def point_on_circle(bearing_deg: float, inset: float = 0) -> tuple[int, int]:

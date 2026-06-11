@@ -74,6 +74,26 @@
             color: #1a3c87;
             display: block;
         }
+        #location-status {
+            margin-top: 12px;
+            font-size: 14px;
+            min-height: 18px;
+            padding: 8px 10px;
+            border-radius: 4px;
+            display: none;
+        }
+        #location-status.saved {
+            background: #e8f0fe;
+            border: 1px solid #90b4f7;
+            color: #1a3c87;
+            display: block;
+        }
+        #location-status.error {
+            background: #fdecea;
+            border: 1px solid #f5c6cb;
+            color: #721c24;
+            display: block;
+        }
         .confirm-row {
             margin-top: 10px;
             display: none;
@@ -95,6 +115,17 @@
 <body>
     <h1>Flight Tracker Dashboard</h1>
     <div id="location-label" style="color:#666; font-size:15px; margin-bottom:14px;"></div>
+
+    <div class="track-box">
+        <h2>Radar Center</h2>
+        <div id="current-location">Loading...</div>
+        <div class="track-row">
+            <input type="text" id="location-input" placeholder="37.639799, -122.368049" style="width: 260px; text-transform: none;" />
+            <button id="btn-location" onclick="saveLocation()">Save</button>
+        </div>
+        <div id="location-status"></div>
+        <p class="note">GPS coordinates for the center of the radar display. Also sets the search area center.</p>
+    </div>
 
     <div class="track-box">
         <h2>Track a Flight</h2>
@@ -234,13 +265,65 @@
             loadCurrent();
         }
 
+        function setLocationStatus(msg, type) {
+            const el = document.getElementById("location-status");
+            el.textContent = msg;
+            el.className = type;
+        }
+
         async function loadLocation() {
             try {
-                const res = await fetch("/airport-code");
+                const res = await fetch("/location/json");
                 const data = await res.json();
-                const label = data.name ? `${data.code} — ${data.name}` : data.code;
-                document.getElementById("location-label").textContent = label;
-            } catch (e) {}
+                const input = document.getElementById("location-input");
+                const current = document.getElementById("current-location");
+                if (data.configured && data.location) {
+                    input.value = data.location;
+                    current.textContent = `Current center: ${data.location}`;
+                    document.getElementById("location-label").textContent =
+                        `Radar center: ${data.location}`;
+                } else {
+                    current.textContent = "Radar center not set.";
+                    document.getElementById("location-label").textContent =
+                        "Radar center not set";
+                }
+            } catch (e) {
+                document.getElementById("current-location").textContent = "Could not load location.";
+            }
+        }
+
+        async function saveLocation() {
+            const val = document.getElementById("location-input").value.trim();
+            if (!val) return;
+
+            const btn = document.getElementById("btn-location");
+            btn.disabled = true;
+            btn.textContent = "Saving...";
+            setLocationStatus("", "");
+
+            try {
+                const res = await fetch("/location/set", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ location: val })
+                });
+                const data = await res.json();
+                if (res.ok) {
+                    setLocationStatus(`✓ ${data.message}`, "saved");
+                    document.getElementById("current-location").textContent =
+                        `Current center: ${data.location}`;
+                    document.getElementById("location-label").textContent =
+                        `Radar center: ${data.location}`;
+                    document.getElementById("location-input").value = data.location;
+                } else {
+                    setLocationStatus(data.message || "Could not save location.", "error");
+                }
+            } catch (e) {
+                setLocationStatus("Save failed — check your connection.", "error");
+            }
+
+            btn.disabled = false;
+            btn.textContent = "Save";
         }
 
         async function searchRoute() {
@@ -284,6 +367,9 @@
             });
             document.getElementById("dest-input").addEventListener("keydown", e => {
                 if (e.key === "Enter") searchRoute();
+            });
+            document.getElementById("location-input").addEventListener("keydown", e => {
+                if (e.key === "Enter") saveLocation();
             });
             loadCurrent();
             loadLocation();

@@ -5,7 +5,7 @@ import time
 
 import pygame
 
-from display.round_touch import aircraft, draw, geo, scale, settings, theme
+from display.round_touch import aircraft, draw, geo, map_bg, scale, settings, theme
 
 
 _sweep_angle = 0.0
@@ -54,7 +54,7 @@ def _draw_grid(surface):
             ("E", east_x, theme.CENTER_Y - font.get_height() // 2),
         ]
         for text, x, y in labels:
-            rendered = font.render(text, True, theme.LABEL)
+            rendered = font.render(text, True, theme.GRID)
             if text in ("N", "S"):
                 rect = rendered.get_rect(midtop=(x, y))
             elif text == "W":
@@ -68,7 +68,7 @@ def _draw_grid(surface):
             rad = math.radians(angle - 90)
             x = theme.CENTER_X + int(diag_r * math.cos(rad))
             y = theme.CENTER_Y + int(diag_r * math.sin(rad))
-            rendered = font.render(label, True, theme.LABEL)
+            rendered = font.render(label, True, theme.GRID)
             rect = rendered.get_rect(center=(x, y))
             surface.blit(rendered, rect)
 
@@ -84,19 +84,35 @@ def _draw_grid(surface):
         rad = math.radians(theme.SCALE_LABEL_BEARING_DEG - 90)
         x = theme.CENTER_X + int(label_r * math.cos(rad))
         y = theme.CENTER_Y + int(label_r * math.sin(rad))
-        rendered = scale_font.render(label, True, theme.LABEL)
+        rendered = scale_font.render(label, True, theme.GRID)
         surface.blit(rendered, rendered.get_rect(center=(x, y)))
 
 
+def _tag_block_metrics():
+    """Return (block_height, row_offsets) for callsign + smaller type/alt lines."""
+    main_font = draw.load_font(theme.FONT_TAG, bold=True)
+    sub_font = draw.load_font(theme.FONT_TAG_SUB, bold=True)
+    main_h = main_font.get_height()
+    sub_h = sub_font.get_height()
+    # Font metrics include extra leading; tuck rows to keep tags compact.
+    tuck_main = theme.s(6)
+    tuck_sub = theme.s(4)
+    offsets = [0, main_h - tuck_main, main_h - tuck_main + sub_h - tuck_sub]
+    block_h = offsets[-1] + sub_h
+    return block_h, offsets, main_font, sub_font
+
+
 def _draw_aircraft_tag(surface, x, y, flight):
-    tag_font = draw.load_font(theme.FONT_TAG, bold=True)
-    callsign = flight.get("callsign") or "—"
+    block_h, offsets, main_font, sub_font = _tag_block_metrics()
+    try:
+        from utilities.airline_branding import display_flight_id_for_flight
+        callsign = display_flight_id_for_flight(flight)
+    except ImportError:
+        callsign = flight.get("callsign") or "—"
     plane_type = flight.get("plane") or ""
     alt = aircraft.format_altitude(flight.get("altitude"))
     alt_color = aircraft.altitude_tag_color(flight.get("vertical_speed"))
 
-    line_h = tag_font.get_height()
-    block_h = line_h * 3
     ly = y - block_h // 2
     tag_on_right = x < theme.CENTER_X
     symbol_half = theme.AIRCRAFT_ICON_RADIUS
@@ -109,18 +125,18 @@ def _draw_aircraft_tag(surface, x, y, flight):
         align = "right"
 
     lines = [
-        (callsign, theme.LABEL),
-        (plane_type, theme.TAG_TYPE),
-        (alt, alt_color),
+        (callsign, theme.GRID, main_font, offsets[0]),
+        (plane_type, theme.TAG_TYPE, sub_font, offsets[1]),
+        (alt, alt_color, sub_font, offsets[2]),
     ]
-    for i, (text, color) in enumerate(lines):
+    for i, (text, color, font, row_y) in enumerate(lines):
         if not text or text == "—" and i == 1:
             continue
-        rendered = tag_font.render(text, True, color)
+        rendered = font.render(text, True, color)
         if align == "left":
-            surface.blit(rendered, (anchor_x, ly + i * line_h))
+            surface.blit(rendered, (anchor_x, ly + row_y))
         else:
-            surface.blit(rendered, rendered.get_rect(topright=(anchor_x, ly + i * line_h)))
+            surface.blit(rendered, rendered.get_rect(topright=(anchor_x, ly + row_y)))
 
 
 def _above_min_height(flight) -> bool:
@@ -179,7 +195,7 @@ def _draw_status(surface, flights):
 
     if not location_configured():
         lines = [
-            "Set HOME_LAT & HOME_LON",
+            "Set radar center on web portal",
             "in /etc/plane-tracker.env",
         ]
         color = theme.TAG_ALT_DESCEND
@@ -201,17 +217,27 @@ def _draw_status(surface, flights):
 
 
 def draw_radar(surface, flights, full_redraw=True):
-    if full_redraw:
-        draw.fill_background(surface)
-        _draw_grid(surface)
-    else:
-        # Redraw grid area only (simple full redraw each sweep frame is fine at 1080)
-        draw.fill_background(surface)
-        _draw_grid(surface)
+    draw.fill_background(surface)
+    map_bg.request_background()
+    map_bg.draw_background(surface)
+    _draw_grid(surface)
 
     _draw_flights(surface, flights)
     draw.draw_sweep_line(surface, _sweep_angle, theme.SWEEP, width=max(2, theme.s(2)))
     _draw_status(surface, flights)
+    _draw_map_attribution(surface)
+
+
+def _draw_map_attribution(surface):
+    text = map_bg.attribution_text()
+    if not text:
+        return
+    font = draw.load_font(theme.s(11))
+    rendered = font.render(text, True, theme.HINT)
+    y = theme.CENTER_Y + int(theme.VISIBLE_RADIUS * 0.52)
+    half = draw.circle_half_width_at_row(y, rendered.get_height())
+    x = theme.CENTER_X + half - rendered.get_width() - theme.s(4)
+    surface.blit(rendered, (x, y))
 
 
 def range_header_rect() -> pygame.Rect:
@@ -240,9 +266,7 @@ def _flight_screen_xy(flight) -> tuple[int, int] | None:
 
 
 def _aircraft_tag_rect(x: int, y: int) -> pygame.Rect:
-    tag_font = draw.load_font(theme.FONT_TAG, bold=True)
-    line_h = tag_font.get_height()
-    block_h = line_h * 3
+    block_h, _, _, _ = _tag_block_metrics()
     ly = y - block_h // 2
     symbol_half = theme.AIRCRAFT_ICON_RADIUS + theme.s(12)
     if x < theme.CENTER_X:

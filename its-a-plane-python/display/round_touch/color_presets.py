@@ -26,11 +26,11 @@ THEMES: tuple[dict[str, tuple[int, int, int]], ...] = (
         "label": (255, 200, 64),
     },
     {
-        "grid": (16, 100, 32),
-        "crosshair": (16, 100, 32),
-        "sweep": (28, 140, 56),
-        "sweep_trail": (6, 35, 14),
-        "label": (80, 180, 100),
+        "grid": (48, 220, 80),
+        "crosshair": (48, 220, 80),
+        "sweep": (80, 255, 112),
+        "sweep_trail": (20, 90, 40),
+        "label": (160, 255, 180),
     },
     {
         "grid": (160, 160, 160),

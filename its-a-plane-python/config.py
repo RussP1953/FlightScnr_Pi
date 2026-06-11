@@ -5,11 +5,16 @@ NO user-configurable defaults are stored in this file.
 All configuration must be provided via:
   - /etc/plane-tracker.env (systemd EnvironmentFile for production)
   - .env file in the project root (for local development via python-dotenv)
+  - location.json in PLANE_TRACKER_DATA_DIR (radar center set via web portal)
 
 See .env.example for documentation of all available variables and their defaults.
 """
+import json
+import logging
 import math
 import os
+
+logger = logging.getLogger(__name__)
 
 # Load .env file if present (for local dev; systemd uses EnvironmentFile instead)
 try:
@@ -81,6 +86,109 @@ LOCATION_HOME, ZONE_HOME, LOCATION_SOURCE = _resolve_location()
 SEARCH_RADIUS_NM = float(os.environ.get("SEARCH_RADIUS_NM", "15"))
 ADSB_ENABLED = _bool(os.environ.get("ADSB_ENABLED", "True"))
 DATA_REFRESH_SECONDS = float(os.environ.get("DATA_REFRESH_SECONDS", "2"))
+LOCATION_FILE = os.path.join(
+    os.environ.get("PLANE_TRACKER_DATA_DIR", "/var/lib/plane-tracker"),
+    "location.json",
+)
+_location_file_mtime: float | None = None
+
+
+def parse_lat_lon_pair(text: str) -> tuple[float, float]:
+    """Parse 'lat, lon' (e.g. '37.639799, -122.368049')."""
+    parts = [part.strip() for part in text.split(",")]
+    if len(parts) != 2 or not parts[0] or not parts[1]:
+        raise ValueError("Enter coordinates as latitude, longitude")
+    lat = float(parts[0])
+    lon = float(parts[1])
+    if not -90.0 <= lat <= 90.0:
+        raise ValueError("Latitude must be between -90 and 90")
+    if not -180.0 <= lon <= 180.0:
+        raise ValueError("Longitude must be between -180 and 180")
+    return lat, lon
+
+
+def format_location_home() -> str:
+    return f"{LOCATION_HOME[0]:.6f}, {LOCATION_HOME[1]:.6f}"
+
+
+def _apply_home(lat: float, lon: float, source: str | None = None):
+    global LOCATION_SOURCE, TEMPERATURE_LOCATION
+    LOCATION_HOME[0] = lat
+    LOCATION_HOME[1] = lon
+    ZONE_HOME.clear()
+    ZONE_HOME.update(_zone_from_home(lat, lon, SEARCH_RADIUS_NM))
+    if source is not None:
+        LOCATION_SOURCE = source
+    elif LOCATION_SOURCE == "unset":
+        LOCATION_SOURCE = "home_radius"
+    if not os.environ.get("TEMPERATURE_LOCATION", "").strip():
+        TEMPERATURE_LOCATION = f"{lat},{lon}"
+
+
+def _save_location_file(lat: float, lon: float):
+    os.makedirs(os.path.dirname(LOCATION_FILE), exist_ok=True)
+    payload = {"lat": lat, "lon": lon}
+    tmp_path = LOCATION_FILE + ".tmp"
+    with open(tmp_path, "w", encoding="utf-8") as fh:
+        json.dump(payload, fh, indent=2)
+    os.replace(tmp_path, LOCATION_FILE)
+    try:
+        os.chmod(LOCATION_FILE, 0o666)
+    except OSError:
+        pass
+
+
+def set_location_home(lat: float, lon: float):
+    """Persist and apply radar center coordinates."""
+    global _location_file_mtime
+    _save_location_file(lat, lon)
+    _apply_home(lat, lon, "portal")
+    try:
+        _location_file_mtime = os.path.getmtime(LOCATION_FILE)
+    except OSError:
+        _location_file_mtime = None
+
+
+def reload_location_override() -> bool:
+    """Reload location.json when changed by another process (e.g. web portal)."""
+    global _location_file_mtime
+    try:
+        mtime = os.path.getmtime(LOCATION_FILE) if os.path.isfile(LOCATION_FILE) else None
+    except OSError:
+        mtime = None
+    if mtime is not None and mtime == _location_file_mtime:
+        return False
+    if not os.path.isfile(LOCATION_FILE):
+        _location_file_mtime = mtime
+        return False
+    try:
+        with open(LOCATION_FILE, encoding="utf-8") as fh:
+            data = json.load(fh)
+        lat = float(data["lat"])
+        lon = float(data["lon"])
+    except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+        logger.warning("Could not load saved location from %s: %s", LOCATION_FILE, exc)
+        _location_file_mtime = mtime
+        return False
+    _apply_home(lat, lon, "portal")
+    _location_file_mtime = mtime
+    return True
+
+
+def _bootstrap_location_override():
+    global _location_file_mtime
+    if not os.path.isfile(LOCATION_FILE):
+        return
+    try:
+        _location_file_mtime = os.path.getmtime(LOCATION_FILE)
+        with open(LOCATION_FILE, encoding="utf-8") as fh:
+            data = json.load(fh)
+        _apply_home(float(data["lat"]), float(data["lon"]), "portal")
+    except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+        logger.warning("Could not apply saved location from %s: %s", LOCATION_FILE, exc)
+
+
+_bootstrap_location_override()
 
 
 def location_configured() -> bool:
@@ -89,7 +197,9 @@ def location_configured() -> bool:
 
 def location_status() -> str:
     if not location_configured():
-        return "Location not set — edit /etc/plane-tracker.env"
+        return "Location not set — use web portal or /etc/plane-tracker.env"
+    if LOCATION_SOURCE == "portal":
+        return f"Radar center set via web ({SEARCH_RADIUS_NM:g}nm search)"
     if LOCATION_SOURCE == "home_radius":
         return f"Searching {SEARCH_RADIUS_NM:g}nm around home"
     return "Searching configured zone"

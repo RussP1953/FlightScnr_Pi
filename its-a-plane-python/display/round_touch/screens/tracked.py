@@ -13,11 +13,102 @@ except ImportError:
     DISTANCE_UNITS = "metric"
 
 from display.round_touch import aircraft, draw, logos, nav, settings, theme
+from utilities.airline_branding import display_flight_id_for_flight
 from utilities.overhead import load_tracked_callsign
+
+FOOTER_BUTTONS = ("radar",)
+
+
+def tap_footer_action(x: int, y: int) -> str | None:
+    idx = nav.tap_footer_button(x, y, len(FOOTER_BUTTONS))
+    if idx is None:
+        return None
+    return FOOTER_BUTTONS[idx]
 
 # Nearest-city cache (matches scenes/trackedstats.py)
 _city_cache = {"lat": None, "lon": None, "result": None}
 _CITY_CACHE_THRESHOLD = 0.01
+
+# Horizontal marquee for stats lines that exceed the round viewport width.
+_marquee_states: dict[str, dict] = {}
+_marquee_animating = False
+_marquee_active_keys: set[str] = set()
+
+
+def reset_marquee():
+    """Clear marquee scroll positions (e.g. when leaving the tracked screen)."""
+    global _marquee_animating
+    _marquee_states.clear()
+    _marquee_active_keys.clear()
+    _marquee_animating = False
+
+
+def tick_marquee() -> bool:
+    """Advance marquee positions; return True while any line is scrolling."""
+    global _marquee_animating
+    if not _marquee_states:
+        _marquee_animating = False
+        return False
+    step = max(1, theme.s(1))
+    active = False
+    for state in _marquee_states.values():
+        state["x"] -= step
+        if state["x"] + state["width"] < state["clip_left"]:
+            state["x"] = float(state["clip_left"] + state["clip_width"])
+        active = True
+    _marquee_animating = active
+    return active
+
+
+def marquee_animating() -> bool:
+    return _marquee_animating
+
+
+def _marquee_key(y: int, text: str) -> str:
+    return f"{y}:{text}"
+
+
+def _draw_marquee_line(
+    surface,
+    y: int,
+    text: str,
+    font,
+    color,
+    *,
+    always_scroll: bool = False,
+) -> None:
+    """Draw a stats line; scroll horizontally when wide or always_scroll is set."""
+    h = font.get_height()
+    max_w = draw.circle_half_width_at_row(int(y), h) * 2
+    text_w = font.size(text)[0]
+    clip_left = theme.CENTER_X - max_w // 2
+    clip_rect = pygame.Rect(clip_left, int(y), max_w, h + 2)
+
+    if text_w <= max_w and not always_scroll:
+        _marquee_states.pop(_marquee_key(int(y), text), None)
+        rendered = font.render(text, True, color)
+        surface.blit(rendered, rendered.get_rect(midtop=(theme.CENTER_X, int(y))))
+        return
+
+    key = _marquee_key(int(y), text)
+    _marquee_active_keys.add(key)
+    state = _marquee_states.get(key)
+    if state is None or state["text"] != text:
+        state = {
+            "text": text,
+            "width": text_w,
+            "clip_left": clip_left,
+            "clip_width": max_w,
+            "x": float(clip_left + max_w),
+        }
+        _marquee_states[key] = state
+
+    rendered = font.render(text, True, color)
+    old_clip = surface.get_clip()
+    surface.set_clip(clip_rect)
+    surface.blit(rendered, (int(state["x"]), int(y)))
+    surface.set_clip(old_clip)
+
 
 def tracking_active() -> bool:
     return bool(load_tracked_callsign())
@@ -201,24 +292,21 @@ def _scheduled_rows(data) -> list[tuple[str, tuple[int, int, int]]]:
 
 
 def _build_stats_rows_compact(data) -> list[tuple[str, tuple[int, int, int]]]:
-    """Two rows: status+progress, then aircraft+telemetry."""
+    """One scrolling ticker row — status, progress, and telemetry (matches LED layout)."""
     if data.get("is_scheduled"):
         return _scheduled_rows(data)
 
     rows: list[tuple[str, tuple[int, int, int]]] = []
     status = _status_label(data)
     status_color = theme.SWEEP if status == "LIVE" else theme.TAG_TYPE
-    head = [status, *_progress_parts(data)]
-    rows.append(("  ·  ".join(head), status_color))
-
-    telemetry = _telemetry_parts(data)
-    if telemetry:
-        rows.append(("  ·  ".join(telemetry), theme.LABEL))
+    parts = [status, *_progress_parts(data), *_telemetry_parts(data)]
+    if parts:
+        rows.append(("  ·  ".join(parts), status_color))
     return rows
 
 
 def _build_stats_rows_scroll(data) -> list[tuple[str, tuple[int, int, int]]]:
-    """Four rows: status, progress, aircraft type, telemetry."""
+    """Two rows: status, then one scrolling ticker for progress + telemetry."""
     if data.get("is_scheduled"):
         return _scheduled_rows(data)
 
@@ -227,17 +315,9 @@ def _build_stats_rows_scroll(data) -> list[tuple[str, tuple[int, int, int]]]:
     status_color = theme.SWEEP if status == "LIVE" else theme.TAG_TYPE
     rows.append((status, status_color))
 
-    progress = _progress_parts(data)
-    if progress:
-        rows.append(("  ·  ".join(progress), theme.LABEL))
-
-    aircraft_type = data.get("aircraft_type", "")
-    if aircraft_type and aircraft_type not in ("", "N/A"):
-        rows.append((aircraft_type, theme.TAG_TYPE))
-
-    telemetry = _telemetry_parts(data)
-    if telemetry:
-        rows.append(("  ·  ".join(telemetry), theme.LABEL))
+    parts = [*_progress_parts(data), *_telemetry_parts(data)]
+    if parts:
+        rows.append(("  ·  ".join(parts), theme.LABEL))
     return rows
 
 
@@ -247,12 +327,9 @@ def _build_stats_rows(data) -> list[tuple[str, tuple[int, int, int]]]:
     return _build_stats_rows_compact(data)
 
 
-def _draw_logo(surface, callsign: str, y: int) -> int:
-    size = theme.s(36)
-    logo = logos.load_logo_surface(
-        logos.icao_for_flight({"callsign": callsign}),
-        size,
-    )
+def _draw_logo(surface, flight: dict, y: int) -> int:
+    logo_h = theme.s(36)
+    logo = logos.load_logo_surface(logos.icao_for_flight(flight), logo_h)
     if logo is None:
         return y
     rect = logo.get_rect(midtop=(theme.CENTER_X, y))
@@ -272,14 +349,37 @@ def _stats_rows_height(rows, font, *, compact: bool) -> int:
     return len(rows) * (h + gap) - gap
 
 
-def _draw_stats_rows_at(surface, rows, y: int, font, *, compact: bool) -> int:
+def _stats_row_always_scroll(index: int, *, compact: bool) -> bool:
+    """Stats ticker lines scroll like the LED matrix; status-only row stays static."""
+    if compact:
+        return True
+    return index > 0
+
+
+def _draw_stats_rows_at(
+    surface,
+    rows,
+    y: int,
+    font,
+    *,
+    compact: bool,
+    clip_top: int | None = None,
+    clip_bottom: int | None = None,
+) -> int:
     gap = _stats_row_gap(compact=compact)
     h = font.get_height()
-    for text, color in rows:
-        max_w = draw.circle_half_width_at_row(int(y), h) * 2
-        line = draw.fit_text(text, font, max_w)
-        rendered = font.render(line, True, color)
-        surface.blit(rendered, rendered.get_rect(midtop=(theme.CENTER_X, int(y))))
+    for i, (text, color) in enumerate(rows):
+        if clip_bottom is not None and int(y) > clip_bottom:
+            break
+        if clip_top is None or int(y) + h >= clip_top:
+            _draw_marquee_line(
+                surface,
+                int(y),
+                text,
+                font,
+                color,
+                always_scroll=_stats_row_always_scroll(i, compact=compact),
+            )
         y += h + gap
     return y
 
@@ -295,36 +395,25 @@ def _draw_stats_rows_clipped(
     gap = _stats_row_gap(compact=True)
     h = font.get_height()
     y = stats_top
-    for text, color in rows:
+    for i, (text, color) in enumerate(rows):
         if y + h > bottom:
             break
-        max_w = draw.circle_half_width_at_row(int(y), h) * 2
-        line = draw.fit_text(text, font, max_w)
-        rendered = font.render(line, True, color)
-        surface.blit(rendered, rendered.get_rect(midtop=(theme.CENTER_X, int(y))))
+        _draw_marquee_line(
+            surface,
+            int(y),
+            text,
+            font,
+            color,
+            always_scroll=_stats_row_always_scroll(i, compact=True),
+        )
         y += h + gap
 
 
-def _live_content_height(data, title_font, body_font, detail_font, *, compact: bool) -> int:
-    h = theme.s(2)
-    h += theme.s(36) + theme.s(4)
-    h += title_font.get_height() + (theme.s(2) if compact else theme.s(4))
-    h += body_font.get_height() + (theme.s(2) if compact else theme.s(4))
-    if not data.get("is_scheduled"):
-        icon_pad = theme.s(5 if compact else 8)
-        bar_h = theme.s(5 if compact else 6)
-        h += icon_pad + bar_h + icon_pad + (theme.s(1) if compact else theme.s(2))
-    else:
-        h += theme.s(4 if compact else 6)
-    h += _stats_rows_height(_build_stats_rows(data), detail_font, compact=compact)
-    return h
-
-
-def _draw_route_header(surface, data, y: int, title_font, body_font, *, compact: bool) -> int:
-    airline_name = data.get("airline_name", "")
-    number = data.get("number", data.get("callsign", ""))
-    flight_num = "".join(ch for ch in number if ch.isnumeric())
-    display_name = f"{airline_name} {flight_num}".strip() if airline_name else number
+def _draw_route_header(surface, data, y: int, title_font, body_font) -> int:
+    airline_name = data.get("airline_name", "") or data.get("airline", "")
+    display_id = display_flight_id_for_flight(data)
+    flight_num = "".join(ch for ch in display_id if ch.isnumeric())
+    display_name = f"{airline_name} {flight_num}".strip() if airline_name else display_id
     origin = data.get("origin", "???")
     destination = data.get("destination", "???")
 
@@ -349,7 +438,7 @@ def _draw_route_header(surface, data, y: int, title_font, body_font, *, compact:
     total_w = origin_img.get_width() + sep_img.get_width() + dest_img.get_width()
     if total_w > max_w:
         y = draw.draw_center_line(surface, f"{origin}{sep}{destination}", y, body_font, theme.ROUTE)
-        return y + (theme.s(2) if compact else theme.s(4))
+        return y + theme.s(2)
 
     x = theme.CENTER_X - total_w // 2
     surface.blit(origin_img, (x, y))
@@ -357,12 +446,12 @@ def _draw_route_header(surface, data, y: int, title_font, body_font, *, compact:
     surface.blit(sep_img, (x, y))
     x += sep_img.get_width()
     surface.blit(dest_img, (x, y))
-    return y + h + (theme.s(2) if compact else theme.s(4))
+    return y + h + theme.s(2)
 
 
-def _draw_progress_bar(surface, data, y: int, *, compact: bool) -> int:
-    bar_h = theme.s(5 if compact else 6)
-    icon_pad = theme.s(5 if compact else 8)
+def _draw_progress_bar(surface, data, y: int) -> int:
+    bar_h = theme.s(5)
+    icon_pad = theme.s(5)
     half_w = draw.circle_half_width_at_row(y, bar_h + icon_pad * 2)
     bar_w = max(theme.s(80), half_w * 2 - theme.s(16))
     x0 = theme.CENTER_X - bar_w // 2
@@ -425,7 +514,7 @@ def _draw_pending(surface, callsign: str, top: int, bottom: int):
     detail_font = draw.load_font(theme.FONT_DETAIL)
 
     y = top + theme.s(8)
-    y = _draw_logo(surface, callsign, y)
+    y = _draw_logo(surface, {"callsign": callsign}, y)
     y = draw.draw_center_line(surface, callsign, y, title_font, theme.LABEL)
     y += theme.s(10)
     if y + body_font.get_height() <= bottom:
@@ -435,69 +524,76 @@ def _draw_pending(surface, callsign: str, top: int, bottom: int):
         y = draw.draw_center_line(surface, "Starts when flight goes live", y, detail_font, theme.HINT)
 
 
+def _finish_marquee_frame():
+    global _marquee_animating
+    for key in list(_marquee_states):
+        if key not in _marquee_active_keys:
+            del _marquee_states[key]
+    _marquee_active_keys.clear()
+    _marquee_animating = bool(_marquee_states)
+
+
 def draw_tracked(
     surface,
     tracked_data,
     callsign: str | None = None,
     scroll_offset: int = 0,
 ) -> int:
+    global _marquee_active_keys
+    _marquee_active_keys = set()
+    del scroll_offset  # tracked page does not scroll vertically
+
     draw.fill_background(surface)
-    callsign = (callsign or load_tracked_callsign() or "").strip().upper()
+    raw_callsign = (callsign or load_tracked_callsign() or "").strip().upper()
+    display_id = raw_callsign
+    if tracked_data:
+        display_id = display_flight_id_for_flight(tracked_data)
     trail = ["Radar", "Track"]
-    if callsign:
-        trail.append(callsign)
+    if display_id and display_id != "—":
+        trail.append(display_id)
     nav.draw_breadcrumb(surface, trail)
 
     top = nav.content_top_y()
-    compact = settings.tracked_stats_mode() == settings.TRACKED_STATS_COMPACT
-    title_font = draw.load_font(theme.s(20) if compact else theme.FONT_TITLE, bold=True)
-    body_font = draw.load_font(theme.s(16) if compact else theme.FONT_BODY)
-    detail_font = draw.load_font(theme.s(15) if compact else theme.FONT_DETAIL)
-    compact_bottom = nav.content_bottom_y() + theme.s(22)
-    scroll_bottom = nav.content_bottom_y()
+    compact_stats = settings.tracked_stats_mode() == settings.TRACKED_STATS_COMPACT
+    title_font = draw.load_font(theme.s(20), bold=True)
+    body_font = draw.load_font(theme.s(16))
+    detail_font = draw.load_font(theme.s(15))
+    content_bottom = nav.content_bottom_y()
 
-    if not callsign:
-        _draw_empty(surface, top, compact_bottom)
-        nav.draw_footer(surface, ["← radar"])
+    if not raw_callsign:
+        _draw_empty(surface, top, content_bottom)
+        nav.draw_footer_buttons(surface, list(FOOTER_BUTTONS))
+        _finish_marquee_frame()
         return 0
 
     if not tracked_data:
-        _draw_pending(surface, callsign, top, compact_bottom)
-        nav.draw_footer(surface, ["← radar"])
+        _draw_pending(surface, raw_callsign, top, content_bottom)
+        nav.draw_footer_buttons(surface, list(FOOTER_BUTTONS))
+        _finish_marquee_frame()
         return 0
 
     stats_rows = _build_stats_rows(tracked_data)
-    max_scroll = 0
-
-    if compact:
-        y = top + theme.s(2)
-        y = _draw_logo(surface, tracked_data.get("callsign") or callsign, y)
-        y = _draw_route_header(surface, tracked_data, y, title_font, body_font, compact=True)
-        if not tracked_data.get("is_scheduled"):
-            y = _draw_progress_bar(surface, tracked_data, y, compact=True)
-            y += theme.s(1)
-        else:
-            y += theme.s(4)
-        if stats_rows:
-            _draw_stats_rows_clipped(surface, stats_rows, y, compact_bottom, detail_font)
-        nav.draw_footer(surface, ["← radar"])
-        return 0
-
-    viewport_h = scroll_bottom - top
-    content_h = _live_content_height(tracked_data, title_font, body_font, detail_font, compact=False)
-    max_scroll = max(0, content_h - viewport_h)
-
-    y = top - scroll_offset
-    y = _draw_logo(surface, tracked_data.get("callsign") or callsign, y)
-    y = _draw_route_header(surface, tracked_data, y, title_font, body_font, compact=False)
+    y = top + theme.s(2)
+    y = _draw_logo(surface, tracked_data, y)
+    y = _draw_route_header(surface, tracked_data, y, title_font, body_font)
     if not tracked_data.get("is_scheduled"):
-        y = _draw_progress_bar(surface, tracked_data, y, compact=False)
-        y += theme.s(2)
+        y = _draw_progress_bar(surface, tracked_data, y)
+        y += theme.s(1)
     else:
-        y += theme.s(6)
+        y += theme.s(4)
     if stats_rows:
-        _draw_stats_rows_at(surface, stats_rows, y, detail_font, compact=False)
-
-    footer = ["↕ scroll", "← radar"] if max_scroll > 0 else ["← radar"]
-    nav.draw_footer(surface, footer)
-    return max_scroll
+        if compact_stats:
+            _draw_stats_rows_clipped(surface, stats_rows, y, content_bottom, detail_font)
+        else:
+            _draw_stats_rows_at(
+                surface,
+                stats_rows,
+                y,
+                detail_font,
+                compact=False,
+                clip_top=top,
+                clip_bottom=content_bottom,
+            )
+    nav.draw_footer_buttons(surface, list(FOOTER_BUTTONS))
+    _finish_marquee_frame()
+    return 0

@@ -92,7 +92,16 @@ class TrackedRouteScene(object):
         display_name = f"{airline_name} {flight_num}".strip() if airline_name else number
         origin       = tracked.get("origin", "???")
         destination  = tracked.get("destination", "???")
-        airline_icao = tracked.get("callsign", "")[:3]
+        try:
+            from utilities.airline_branding import resolve_logo_icao
+            airline_icao = resolve_logo_icao(
+                operator_icao=tracked.get("owner_icao") or "",
+                airline_icao=tracked.get("airline_icao") or "",
+                flight_number=tracked.get("flight_number") or tracked.get("number") or "",
+                callsign=tracked.get("callsign") or "",
+            )
+        except ImportError:
+            airline_icao = tracked.get("callsign", "")[:3]
 
         # Cache logo — only reload if airline changed
         if airline_icao != self._tr_last_icao:

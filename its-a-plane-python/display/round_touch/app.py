@@ -7,7 +7,7 @@ import time
 import pygame
 
 from utilities.overhead import Overhead
-from display.round_touch import draw, input_handler, nav, scale, settings, theme, video
+from display.round_touch import draw, input_handler, map_bg, nav, scale, settings, theme, video
 from display.round_touch.screens import clock, details, flight_detail, info, radar, tracked
 
 logger = logging.getLogger("plane-tracker.display")
@@ -59,6 +59,8 @@ class RoundTouchDisplay:
         self._last_tracked_data = None
 
         radar._init_sweep()
+        map_bg.request_background()
+        map_bg.prewarm_all_scales()
         self._safe_draw()
 
     def _refresh_flights(self):
@@ -130,6 +132,8 @@ class RoundTouchDisplay:
 
     def _return_to_radar(self):
         self._fatal_error = None
+        if self.screen == SCREEN_TRACKED:
+            tracked.reset_marquee()
         self.screen = SCREEN_RADAR
         self.settings_page = info.PAGE_MAIN
         self._scroll.reset()
@@ -143,6 +147,8 @@ class RoundTouchDisplay:
 
     def _open_screen(self, screen: str):
         if screen != self.screen:
+            if self.screen == SCREEN_TRACKED:
+                tracked.reset_marquee()
             self._scroll.reset()
         self.screen = screen
 
@@ -187,16 +193,9 @@ class RoundTouchDisplay:
         dy = self.input.consume_scroll_drag()
         if not dy:
             return
-        if self.screen == SCREEN_TRACKED and settings.tracked_stats_mode() == settings.TRACKED_STATS_SCROLL:
-            self._apply_scroll_delta(-dy)
-        elif self.screen == SCREEN_FLIGHT:
+        if self.screen == SCREEN_FLIGHT:
             self._apply_scroll_delta(-dy)
         elif self.screen == SCREEN_DETAILS:
-            self._apply_scroll_delta(-dy)
-        elif self.screen == SCREEN_SETTINGS and self.settings_page in (
-            info.PAGE_MAIN,
-            info.PAGE_COLORS,
-        ):
             self._apply_scroll_delta(-dy)
 
     def _handle_settings_tap(self, x: int | None = None, y: int | None = None):
@@ -277,64 +276,15 @@ class RoundTouchDisplay:
             self.settings_page = info.PAGE_MAIN
             self._note_activity()
             self._safe_draw()
-        elif swipe == input_handler.SWIPE_LEFT and self.screen == SCREEN_SETTINGS and self.settings_page == info.PAGE_MAIN:
-            self._set_settings_page(info.PAGE_DISPLAY)
-            self._safe_draw()
-        elif swipe == input_handler.SWIPE_LEFT and self.screen == SCREEN_SETTINGS and self.settings_page == info.PAGE_DISPLAY:
-            self._set_settings_page(info.PAGE_COLORS)
-            self._safe_draw()
-        elif self.screen == SCREEN_FLIGHT and swipe == input_handler.SWIPE_LEFT:
-            ordered = self._ordered_flights()
-            if ordered:
-                self.flight_index = (self.flight_index + 1) % len(ordered)
-                self._scroll.reset()
-                self._note_activity()
-                self._safe_draw()
-        elif self.screen == SCREEN_FLIGHT and swipe == input_handler.SWIPE_RIGHT:
-            self._return_to_radar()
-            self._safe_draw()
         elif self.screen == SCREEN_FLIGHT and swipe in (input_handler.SWIPE_UP, input_handler.SWIPE_DOWN):
             delta = -nav.scroll_step() if swipe == input_handler.SWIPE_UP else nav.scroll_step()
             self._scroll.step(delta)
-            self._safe_draw()
-        elif swipe == input_handler.SWIPE_RIGHT and self.screen == SCREEN_SETTINGS and self.settings_page == info.PAGE_COLORS:
-            self._set_settings_page(info.PAGE_DISPLAY)
-            self._safe_draw()
-        elif swipe == input_handler.SWIPE_RIGHT and self.screen == SCREEN_SETTINGS and self.settings_page == info.PAGE_DISPLAY:
-            self._set_settings_page(info.PAGE_MAIN)
-            self._safe_draw()
-        elif swipe == input_handler.SWIPE_RIGHT and self.screen == SCREEN_SETTINGS:
-            self._return_to_radar()
             self._safe_draw()
         elif swipe in (input_handler.SWIPE_UP, input_handler.SWIPE_DOWN) and self.screen == SCREEN_DETAILS:
             delta = -nav.scroll_step() if swipe == input_handler.SWIPE_UP else nav.scroll_step()
             self._scroll.step(delta)
             self._safe_draw()
-        elif (
-            swipe in (input_handler.SWIPE_UP, input_handler.SWIPE_DOWN)
-            and self.screen == SCREEN_TRACKED
-            and settings.tracked_stats_mode() == settings.TRACKED_STATS_SCROLL
-        ):
-            delta = -nav.scroll_step() if swipe == input_handler.SWIPE_UP else nav.scroll_step()
-            self._apply_scroll_delta(delta)
-        elif swipe in (input_handler.SWIPE_UP, input_handler.SWIPE_DOWN) and self.screen == SCREEN_SETTINGS and self.settings_page in (
-            info.PAGE_MAIN,
-            info.PAGE_COLORS,
-        ):
-            delta = -nav.scroll_step() if swipe == input_handler.SWIPE_UP else nav.scroll_step()
-            self._scroll.step(delta)
-            self._safe_draw()
-
         if tap and not theme.in_visible_circle(tap[0], tap[1]):
-            tap = None
-        if (
-            tap
-            and self.screen == SCREEN_TRACKED
-            and settings.tracked_stats_mode() == settings.TRACKED_STATS_SCROLL
-            and not nav.tap_breadcrumb(tap[0], tap[1])
-        ):
-            delta = nav.scroll_step() if tap[1] >= theme.CENTER_Y else -nav.scroll_step()
-            self._apply_scroll_delta(delta)
             tap = None
         if tap and nav.tap_breadcrumb(tap[0], tap[1]) and self.screen != SCREEN_RADAR:
             if self.screen == SCREEN_TRACKED:
@@ -353,20 +303,47 @@ class RoundTouchDisplay:
             elif radar.tap_on_range_header(tap[0], tap[1]):
                 scale.cycle_next()
                 settings.set_scale_index(scale.active_index())
+                map_bg.request_background()
                 self._safe_draw()
         elif tap and self.screen == SCREEN_FLIGHT:
             ordered = self._ordered_flights()
-            if ordered:
+            action = flight_detail.tap_footer_action(tap[0], tap[1], ordered)
+            if action == "prev" and ordered:
+                self.flight_index = (self.flight_index - 1) % len(ordered)
+                self._scroll.reset()
+                self._note_activity()
+                self._safe_draw()
+            elif action == "next" and ordered:
                 self.flight_index = (self.flight_index + 1) % len(ordered)
                 self._scroll.reset()
                 self._note_activity()
+                self._safe_draw()
+            elif action == "radar":
+                self._return_to_radar()
+                self._safe_draw()
+        elif tap and self.screen == SCREEN_TRACKED:
+            action = tracked.tap_footer_action(tap[0], tap[1])
+            if action == "radar":
+                self._return_to_radar()
                 self._safe_draw()
         elif tap and self.screen == SCREEN_CLOCK and clock.tap_on_time(tap[0], tap[1]):
             settings.toggle_clock_format()
             self._note_activity()
             self._safe_draw()
         elif tap and self.screen == SCREEN_SETTINGS:
-            self._handle_settings_tap(tap[0], tap[1])
+            action = info.tap_footer_action(tap[0], tap[1])
+            if action == "prev":
+                prev = info.prev_page(self.settings_page)
+                if prev is not None:
+                    self._set_settings_page(prev)
+            elif action == "next":
+                nxt = info.next_page(self.settings_page)
+                if nxt is not None:
+                    self._set_settings_page(nxt)
+            elif action == "radar":
+                self._return_to_radar()
+            else:
+                self._handle_settings_tap(tap[0], tap[1])
             self._note_activity()
             self._safe_draw()
 
@@ -387,6 +364,18 @@ class RoundTouchDisplay:
             self._last_clock_minute = minute
             self._safe_draw()
 
+    def _maybe_reload_location(self):
+        try:
+            from config import reload_location_override
+            from display.round_touch import map_bg
+
+            if reload_location_override():
+                map_bg.invalidate()
+                map_bg.prewarm_all_scales()
+                self._safe_draw()
+        except ImportError:
+            pass
+
     def _tick_data(self):
         try:
             self._refresh_flights()
@@ -399,6 +388,7 @@ class RoundTouchDisplay:
         logger.info("Round touch display starting (%dx%d)", theme.DISPLAY_WIDTH, theme.DISPLAY_HEIGHT)
         running = True
         last_data_poll = 0
+        last_location_check = 0
         try:
             from config import DATA_REFRESH_SECONDS
         except ImportError:
@@ -435,6 +425,9 @@ class RoundTouchDisplay:
                 if now - last_data_poll >= DATA_REFRESH_SECONDS:
                     self._tick_data()
                     last_data_poll = now
+                if now - last_location_check >= 2.0:
+                    self._maybe_reload_location()
+                    last_location_check = now
 
                 if self._fatal_error:
                     time.sleep(1.0)
@@ -450,7 +443,13 @@ class RoundTouchDisplay:
                         self._last_radar_draw = now
                 elif self.screen == SCREEN_CLOCK:
                     self._tick_clock()
-                elif self.screen in (SCREEN_FLIGHT, SCREEN_SETTINGS, SCREEN_DETAILS, SCREEN_TRACKED):
+                elif self.screen == SCREEN_TRACKED:
+                    tracked.tick_marquee()
+                    interval = theme.SWEEP_FRAME_MS / 1000.0 if tracked.marquee_animating() else 1.0
+                    if (now - self._last_static_draw) >= interval:
+                        self._safe_draw()
+                        self._last_static_draw = now
+                elif self.screen in (SCREEN_FLIGHT, SCREEN_SETTINGS, SCREEN_DETAILS):
                     if (now - self._last_static_draw) >= 1.0:
                         self._safe_draw()
                         self._last_static_draw = now
