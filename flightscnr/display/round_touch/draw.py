@@ -210,8 +210,14 @@ _bezel_overlay = None
 _bezel_key = None
 
 
+def invalidate_bezel_cache() -> None:
+    global _bezel_overlay, _bezel_key
+    _bezel_overlay = None
+    _bezel_key = None
+
+
 def apply_round_bezel(surface: pygame.Surface):
-    """Mask corners outside the round visible area, then draw the extent ring."""
+    """Mask corners outside the round visible area."""
     global _bezel_overlay, _bezel_key
     size = surface.get_size()
     key = (size, theme.CENTER_X, theme.CENTER_Y, theme.VISIBLE_RADIUS, theme.BG)
@@ -226,15 +232,3 @@ def apply_round_bezel(surface: pygame.Surface):
         )
         _bezel_key = key
     surface.blit(_bezel_overlay, (0, 0))
-    draw_visible_extent(surface)
-
-
-def draw_visible_extent(surface: pygame.Surface):
-    """White circle marking the edge of the round visible area."""
-    pygame.draw.circle(
-        surface,
-        theme.LABEL,
-        (theme.CENTER_X, theme.CENTER_Y),
-        theme.VISIBLE_RADIUS,
-        max(1, theme.s(2)),
-    )

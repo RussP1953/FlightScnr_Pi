@@ -1,33 +1,19 @@
-"""Clock screen with optional weather."""
+"""Clock screen with weather (FlightScnr clock screen)."""
 
 from datetime import datetime
-import time
 
 import pygame
 
-try:
-    from config import TEMPERATURE_UNITS
-except ImportError:
-    TEMPERATURE_UNITS = "metric"
+from display.round_touch import draw, nav, settings, theme, weather_data, weather_icons
 
-from display.round_touch import draw, nav, settings, theme
+FOOTER_BUTTONS = ("radar",)
 
-_weather_cache = {"temp": None, "ts": 0}
-
-
-def _fetch_temperature():
-    now = time.time()
-    if now - _weather_cache["ts"] < 1800 and _weather_cache["temp"] is not None:
-        return _weather_cache["temp"]
-    try:
-        result = __import__("utilities.temperature", fromlist=["grab_temperature_and_humidity"]).grab_temperature_and_humidity()
-        if result and result[0] is not None:
-            _weather_cache["temp"] = result[0]
-            _weather_cache["ts"] = now
-            return result[0]
-    except Exception:
-        pass
-    return _weather_cache["temp"]
+# Tight vertical rhythm — matches firmware reference (390px ref, scaled).
+_LINE_GAP = lambda: theme.s(2)
+_AFTER_TIME = lambda: theme.s(2)
+_SECTION_GAP = lambda: theme.s(4)
+_WEATHER_ICON = lambda: theme.s(40)
+_SUN_OFFSET = lambda: theme.s(82)
 
 
 def _time_strings(now: datetime | None = None):
@@ -41,19 +27,60 @@ def _time_strings(now: datetime | None = None):
     return time_str, ampm
 
 
+def _date_string(now: datetime | None = None) -> str:
+    now = now or datetime.now()
+    return f"{now.strftime('%a, %b')} {now.day}"
+
+
+def _format_sun_time(value: str) -> str:
+    """Format HH:MM from weather API for clock display (e.g. 5:49 AM)."""
+    text = (value or "").strip()
+    if not text or text == "—":
+        return "—"
+    try:
+        parts = text.split(":")
+        hour = int(parts[0])
+        minute = int(parts[1]) if len(parts) > 1 else 0
+    except (ValueError, IndexError):
+        return text
+    if settings.use_12hr_clock():
+        ampm = "AM" if hour < 12 else "PM"
+        display_hour = hour % 12 or 12
+        if minute:
+            return f"{display_hour}:{minute:02d} {ampm}"
+        return f"{display_hour} {ampm}"
+    return f"{hour}:{minute:02d}"
+
+
 def _ampm_top_y(time_font, ampm_font, time_y: int) -> int:
-    """Align AM/PM baseline with the clock digits."""
     return time_y + time_font.get_ascent() - ampm_font.get_ascent()
 
 
+def _center_line(surface, y: int, text: str, font, color) -> int:
+    h = font.get_height()
+    max_w = draw.circle_half_width_at_row(y, h) * 2
+    line = draw.fit_text(text, font, max_w)
+    rendered = font.render(line, True, color)
+    surface.blit(rendered, rendered.get_rect(midtop=(theme.CENTER_X, y)))
+    return y + h + _LINE_GAP()
+
+
+def _footer_limit_y() -> int:
+    return nav.content_bottom_y() - theme.s(10)
+
+
+def _clock_start_y() -> int:
+    """Anchor the clock block just below the breadcrumb."""
+    return nav.content_top_y() + theme.s(2)
+
+
 def _draw_time_block(surface, y: int) -> int:
-    """Draw the large time readout; return y below the block."""
     time_font = draw.load_font(theme.FONT_CLOCK, bold=True)
     ampm_font = draw.load_font(theme.FONT_CLOCK_AMPM, bold=True)
     time_str, ampm = _time_strings()
 
     if ampm:
-        gap = theme.s(10)
+        gap = theme.s(8)
         time_img = time_font.render(time_str, True, theme.SWEEP)
         ampm_img = ampm_font.render(ampm, True, theme.SWEEP)
         total_w = time_img.get_width() + gap + ampm_img.get_width()
@@ -62,22 +89,117 @@ def _draw_time_block(surface, y: int) -> int:
         ampm_y = _ampm_top_y(time_font, ampm_font, time_y)
         surface.blit(time_img, (x, time_y))
         surface.blit(ampm_img, (x + time_img.get_width() + gap, ampm_y))
-        block_bottom = max(time_y + time_img.get_height(), ampm_y + ampm_img.get_height())
-        return block_bottom + theme.s(14)
+        return max(time_y + time_img.get_height(), ampm_y + ampm_img.get_height())
 
     rendered = time_font.render(time_str, True, theme.SWEEP)
     rect = rendered.get_rect(midtop=(theme.CENTER_X, y))
     surface.blit(rendered, rect)
-    return rect.bottom + theme.s(14)
+    return rect.bottom
+
+
+def _weather_row_height(wx, body_font, detail_font) -> int:
+    if not wx or not wx.get("ready") or wx.get("temp") is None:
+        return 0
+    text_h = body_font.get_height()
+    if wx.get("weather_label"):
+        text_h += theme.s(1) + detail_font.get_height()
+    return max(_WEATHER_ICON(), text_h)
+
+
+def _sun_row_height(wx) -> int:
+    if not wx or not wx.get("ready"):
+        return 0
+    sunrise = wx.get("sunrise")
+    sunset = wx.get("sunset")
+    if (not sunrise or sunrise == "—") and (not sunset or sunset == "—"):
+        return 0
+    return max(weather_icons.sun_icon_size(), draw.load_font(theme.FONT_DETAIL).get_height())
+
+
+def _draw_weather_row(surface, y: int, wx, body_font, detail_font) -> int:
+    temp = wx.get("temp")
+    if temp is None:
+        return y
+
+    unit = wx.get("unit") or "C"
+    code = None
+    days = wx.get("days") or []
+    if days:
+        code = days[0].get("weather_code")
+    sunrise = wx.get("sunrise")
+    sunset = wx.get("sunset")
+
+    icon_size = _WEATHER_ICON()
+    temp_line = f"{int(round(temp))}°{unit}"
+    temp_img = body_font.render(temp_line, True, theme.ROUTE)
+    cond = wx.get("weather_label") or ""
+    cond_img = detail_font.render(cond, True, theme.HINT) if cond else None
+
+    text_h = temp_img.get_height()
+    if cond_img:
+        text_h += theme.s(1) + cond_img.get_height()
+    row_h = max(icon_size, text_h)
+
+    gap = theme.s(8)
+    text_w = max(temp_img.get_width(), cond_img.get_width() if cond_img else 0)
+    row_w = icon_size + gap + text_w
+    start_x = theme.CENTER_X - row_w // 2
+
+    weather_icons.draw_icon(
+        surface,
+        code,
+        (start_x + icon_size // 2, y + row_h // 2),
+        icon_size,
+        theme.ROUTE,
+        night=weather_icons.is_night(sunrise, sunset),
+    )
+
+    text_x = start_x + icon_size + gap
+    text_y = y + (row_h - text_h) // 2
+    surface.blit(temp_img, (text_x, text_y))
+    if cond_img:
+        surface.blit(cond_img, (text_x, text_y + temp_img.get_height() + theme.s(1)))
+
+    return y + row_h + _LINE_GAP()
+
+
+def _draw_sun_row(surface, y: int, wx, detail_font) -> int:
+    sunrise = _format_sun_time(wx.get("sunrise"))
+    sunset = _format_sun_time(wx.get("sunset"))
+    if sunrise == "—" and sunset == "—":
+        return y
+
+    row_h = _sun_row_height(wx)
+    offset = _SUN_OFFSET()
+    if sunrise != "—":
+        weather_icons.draw_sun_group(
+            surface,
+            theme.CENTER_X - offset,
+            y,
+            sunrise,
+            sunset=False,
+            font=detail_font,
+            color=theme.HINT,
+        )
+    if sunset != "—":
+        weather_icons.draw_sun_group(
+            surface,
+            theme.CENTER_X + offset,
+            y,
+            sunset,
+            sunset=True,
+            font=detail_font,
+            color=theme.HINT,
+        )
+    return y + row_h + _LINE_GAP()
 
 
 def time_tap_rect() -> pygame.Rect:
-    """Tap target for the large clock readout."""
     time_font = draw.load_font(theme.FONT_CLOCK, bold=True)
     ampm_font = draw.load_font(theme.FONT_CLOCK_AMPM, bold=True)
-    time_str, ampm = _time_strings()
-    y = nav.content_top_y() + theme.s(8)
+    y = _clock_start_y()
 
+    time_str, ampm = _time_strings()
     if ampm:
         gap = theme.s(8)
         time_w = time_font.size(time_str)[0]
@@ -89,9 +211,6 @@ def time_tap_rect() -> pygame.Rect:
 
     rendered = time_font.render(time_str, True, theme.SWEEP)
     return rendered.get_rect(midtop=(theme.CENTER_X, y))
-
-
-FOOTER_BUTTONS = ("radar",)
 
 
 def tap_footer_action(x: int, y: int) -> str | None:
@@ -108,25 +227,25 @@ def tap_on_time(x: int, y: int) -> bool:
 def draw_clock(surface):
     draw.fill_background(surface)
     nav.draw_breadcrumb(surface, ["Radar", "Clock"])
-    nav.draw_footer_buttons(surface, list(FOOTER_BUTTONS))
 
-    now = datetime.now()
-    date_str = now.strftime("%a %b %d, %Y")
-    tz_name = time.tzname[0] if time.tzname else "Local"
-
-    temp = _fetch_temperature()
-    temp_line = ""
-    if temp is not None:
-        unit = "°F" if TEMPERATURE_UNITS == "imperial" else "°C"
-        temp_line = f"{int(round(temp))}{unit}"
+    wx = weather_data.refresh() or weather_data.snapshot()
+    date_str = _date_string()
 
     body_font = draw.load_font(theme.FONT_BODY)
     detail_font = draw.load_font(theme.FONT_DETAIL)
+    limit_y = _footer_limit_y()
 
-    y = _draw_time_block(surface, nav.content_top_y() + theme.s(8))
-    y = draw.draw_center_line(surface, date_str, y, body_font, theme.LABEL)
-    y += theme.s(4)
-    y = draw.draw_center_line(surface, tz_name, y, detail_font, theme.HINT)
-    if temp_line:
-        y += theme.s(8)
-        draw.draw_center_line(surface, temp_line, y, body_font, theme.ROUTE)
+    y = _clock_start_y()
+    y = _draw_time_block(surface, y)
+    y += _AFTER_TIME()
+    y = _center_line(surface, y, date_str, body_font, theme.LABEL)
+
+    if wx and wx.get("ready") and wx.get("temp") is not None and y < limit_y:
+        y += _SECTION_GAP()
+        y = _draw_weather_row(surface, y, wx, body_font, detail_font)
+        if _sun_row_height(wx) and y < limit_y:
+            y += _SECTION_GAP()
+            y = _draw_sun_row(surface, y, wx, detail_font)
+
+    nav.draw_footer_buttons(surface, list(FOOTER_BUTTONS))
+    weather_icons.draw_attribution(surface)

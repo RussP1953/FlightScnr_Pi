@@ -23,6 +23,13 @@ try:
 except ImportError:
     pass
 
+# User-friendly keys: config.h + web portal secrets.json (env vars still win)
+try:
+    from secrets_store import bootstrap_secrets
+    bootstrap_secrets()
+except ImportError:
+    pass
+
 
 def _bool(val: str) -> bool:
     return val.strip().lower() in ("true", "1", "yes", "on")
@@ -50,6 +57,13 @@ def _zone_from_home(lat: float, lon: float, radius_nm: float) -> dict:
         "br_y": lat - lat_delta,
         "br_x": lon + lon_delta,
     }
+
+
+def zone_from_radius_nm(radius_nm: float, home: list | None = None) -> dict:
+    """Square bounding box centered on home (defaults to LOCATION_HOME)."""
+    if home is None:
+        home = LOCATION_HOME
+    return _zone_from_home(home[0], home[1], radius_nm)
 
 
 def _resolve_location():
@@ -111,8 +125,11 @@ def format_location_home() -> str:
     return f"{LOCATION_HOME[0]:.6f}, {LOCATION_HOME[1]:.6f}"
 
 
-def _apply_home(lat: float, lon: float, source: str | None = None):
+def _apply_home(lat: float, lon: float, source: str | None = None) -> bool:
+    """Apply home coordinates. Returns True if lat/lon actually changed."""
     global LOCATION_SOURCE, TEMPERATURE_LOCATION
+    old_lat, old_lon = float(LOCATION_HOME[0]), float(LOCATION_HOME[1])
+    changed = abs(old_lat - lat) > 1e-7 or abs(old_lon - lon) > 1e-7
     LOCATION_HOME[0] = lat
     LOCATION_HOME[1] = lon
     ZONE_HOME.clear()
@@ -123,6 +140,7 @@ def _apply_home(lat: float, lon: float, source: str | None = None):
         LOCATION_SOURCE = "home_radius"
     if not os.environ.get("TEMPERATURE_LOCATION", "").strip():
         TEMPERATURE_LOCATION = f"{lat},{lon}"
+    return changed
 
 
 def _save_location_file(lat: float, lon: float):
@@ -170,9 +188,9 @@ def reload_location_override() -> bool:
         logger.warning("Could not load saved location from %s: %s", LOCATION_FILE, exc)
         _location_file_mtime = mtime
         return False
-    _apply_home(lat, lon, "portal")
+    changed = _apply_home(lat, lon, "portal")
     _location_file_mtime = mtime
-    return True
+    return changed
 
 
 def _bootstrap_location_override():
@@ -225,9 +243,32 @@ def web_portal_url(hostname: str) -> str:
 
 
 # --- Display & units ---
-DISPLAY_WIDTH = int(os.environ.get("DISPLAY_WIDTH", "1080"))
-DISPLAY_HEIGHT = int(os.environ.get("DISPLAY_HEIGHT", "1080"))
+DISPLAY_WIDTH = int(os.environ.get("DISPLAY_WIDTH", "720"))
+DISPLAY_HEIGHT = int(os.environ.get("DISPLAY_HEIGHT", "720"))
+DISPLAY_ROTATION = int(os.environ.get("DISPLAY_ROTATION", "90")) % 360
+if DISPLAY_ROTATION not in (0, 90, 180, 270):
+    DISPLAY_ROTATION = round(DISPLAY_ROTATION / 90) * 90 % 360
 DISPLAY_FULLSCREEN = _bool(os.environ.get("DISPLAY_FULLSCREEN", "True"))
+
+
+def square_framebuffer_side() -> int:
+    """Square draw-buffer size for the round touch UI (refined after display init)."""
+    if DISPLAY_WIDTH == DISPLAY_HEIGHT:
+        return DISPLAY_WIDTH
+    # Legacy rectangular env — guess from config; app.py clamps to the real display.
+    if DISPLAY_ROTATION in (90, 270):
+        side = max(DISPLAY_WIDTH, DISPLAY_HEIGHT)
+    else:
+        side = min(DISPLAY_WIDTH, DISPLAY_HEIGHT)
+    logger.warning(
+        "DISPLAY_WIDTH (%d) != DISPLAY_HEIGHT (%d). Set both to your panel resolution "
+        "(e.g. 720×720) in /etc/flightscnr.env. Provisional framebuffer: %d×%d.",
+        DISPLAY_WIDTH,
+        DISPLAY_HEIGHT,
+        side,
+        side,
+    )
+    return side
 BUTTONS_DIR = os.environ.get("BUTTONS_DIR", "").strip()
 SDL_VIDEODRIVER = os.environ.get("SDL_VIDEODRIVER", "")
 

@@ -23,8 +23,9 @@ CACHE_FILE  = os.path.join(BASE_DIR, "airports.json")
 CSV_URL     = "https://raw.githubusercontent.com/datasets/airport-codes/master/data/airport-codes.csv"
 
 # Cache version — increment to force rebuild (e.g. when coordinate parsing changes)
+# v3: store municipality name for route labels
 # v2: confirmed coordinates field is "latitude, longitude" order
-CACHE_VERSION = 2
+CACHE_VERSION = 3
 
 # In-memory lookup: both IATA and ICAO -> {lat, lon}
 _db = {}
@@ -62,6 +63,13 @@ def _download_and_build():
             # Index by ICAO code too
             if icao:
                 db[icao] = {"lat": lat, "lon": lon}
+
+            municipality = (row.get("municipality") or "").strip()
+            if municipality:
+                if iata and iata != "0" and iata in db:
+                    db[iata]["name"] = municipality
+                if icao and icao in db:
+                    db[icao]["name"] = municipality
 
         cache_data = {"_version": CACHE_VERSION, "airports": db}
         with open(CACHE_FILE, "w", encoding="utf-8") as f:
@@ -134,6 +142,60 @@ def get_airport_coords(code):
             return _db[icao]
 
     return {}
+
+
+def _lookup_record(code: str) -> dict:
+    """Return the airport record for an IATA or ICAO code."""
+    _load()
+    if not code:
+        return {}
+
+    code = code.strip().upper()
+    if code in _db:
+        return _db[code]
+
+    if len(code) == 4 and code[0] == "K":
+        rec = _db.get(code[1:])
+        if rec:
+            return rec
+
+    if len(code) == 3:
+        rec = _db.get("K" + code)
+        if rec:
+            return rec
+
+    return {}
+
+
+def get_airport_name(code: str) -> str:
+    """City/municipality label for an airport code (e.g. SFO → San Francisco)."""
+    return (_lookup_record(code).get("name") or "").strip()
+
+
+def display_airport_code(code: str) -> str:
+    """Prefer IATA for display when the airports DB can resolve ICAO."""
+    if not code:
+        return "?"
+    code = code.strip().upper()
+    if code in ("—", "?"):
+        return code
+    if len(code) == 4:
+        iata = icao_to_iata(code)
+        if iata and len(iata) == 3:
+            return iata
+    return code
+
+
+def format_route_endpoint(code: str) -> str:
+    """Format one route endpoint like firmware FlightScnr: ``SFO, San Francisco``."""
+    code = (code or "").strip().upper()
+    if not code or code in ("—", "?"):
+        return "—"
+    display = display_airport_code(code)
+    name = get_airport_name(code)
+    if name:
+        return f"{display}, {name}"
+    return display
 
 
 def icao_to_iata(icao_code):

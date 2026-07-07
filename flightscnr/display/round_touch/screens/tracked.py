@@ -19,6 +19,7 @@ from display.round_touch.screens import common
 from utilities.airline_branding import display_flight_id_for_flight
 from utilities.icao_types import format_aircraft_type
 from utilities.overhead import load_tracked_callsign
+from utilities.route_labels import route_display_lines
 
 try:
     from config import web_portal_url
@@ -335,14 +336,23 @@ def _format_dist_remaining(dist) -> str | None:
     """Format distance remaining using display units from Settings → Display."""
     if dist is None:
         return None
-    use_miles = settings.distance_in_miles()
+    units = settings.distance_units()
     stored_km = DISTANCE_UNITS == "metric"
     value = float(dist)
-    if stored_km and use_miles:
+    if stored_km and units == "mi":
         value /= 1.609344
-    elif not stored_km and not use_miles:
+    elif stored_km and units == "nm":
+        value /= 1.852
+    elif not stored_km and units == "km":
         value *= 1.609344
-    unit = "mi" if use_miles else "km"
+    elif not stored_km and units == "nm":
+        value /= 1.15078
+    if units == "mi":
+        unit = "mi"
+    elif units == "nm":
+        unit = "nm"
+    else:
+        unit = "km"
     return f"{int(value)}{unit}"
 
 
@@ -424,9 +434,11 @@ def _scheduled_rows(data) -> list[tuple[str, tuple[int, int, int]]]:
     dep = _format_dep_time(data.get("dep_time", ""))
     origin = data.get("origin", "")
     dest = data.get("destination", "")
+    route_parts = route_display_lines(origin, dest)
+    route = route_parts[0] if len(route_parts) == 1 else f"{route_parts[0]} {route_parts[1]}"
     if dep:
-        return [(f"Departs {dep}  {origin} → {dest}", theme.ROUTE)]
-    return [(f"Scheduled  {origin} → {dest}", theme.ROUTE)]
+        return [(f"Departs {dep}  {route}", theme.ROUTE)]
+    return [(f"Scheduled  {route}", theme.ROUTE)]
 
 
 def _build_stats_rows(
@@ -511,23 +523,30 @@ def _draw_route_header(surface, data, y: int, title_font, body_font) -> int:
     )
 
     h = body_font.get_height()
-    max_w = draw.circle_half_width_at_row(y, h) * 2
-    sep = "  →  "
-    origin_img = body_font.render(origin, True, origin_color)
-    sep_img = body_font.render(sep, True, theme.MUTED)
-    dest_img = body_font.render(destination, True, dest_color)
-    total_w = origin_img.get_width() + sep_img.get_width() + dest_img.get_width()
-    if total_w > max_w:
-        y = draw.draw_center_line(surface, f"{origin}{sep}{destination}", y, body_font, theme.ROUTE)
+    route_lines = route_display_lines(origin, destination, font=body_font, y=y)
+    if len(route_lines) == 1:
+        line = route_lines[0]
+        max_w = draw.circle_half_width_at_row(y, h) * 2
+        if " > " in line and not line.startswith(">"):
+            left, _, right = line.partition(" > ")
+            origin_img = body_font.render(left, True, origin_color)
+            sep_img = body_font.render(" > ", True, theme.MUTED)
+            dest_img = body_font.render(right, True, dest_color)
+            total_w = origin_img.get_width() + sep_img.get_width() + dest_img.get_width()
+            if total_w <= max_w:
+                x = theme.CENTER_X - total_w // 2
+                surface.blit(origin_img, (x, y))
+                x += origin_img.get_width()
+                surface.blit(sep_img, (x, y))
+                x += sep_img.get_width()
+                surface.blit(dest_img, (x, y))
+                return y + h + theme.s(1)
+        y = draw.draw_center_line(surface, line, y, body_font, theme.ROUTE)
         return y + theme.s(1)
 
-    x = theme.CENTER_X - total_w // 2
-    surface.blit(origin_img, (x, y))
-    x += origin_img.get_width()
-    surface.blit(sep_img, (x, y))
-    x += sep_img.get_width()
-    surface.blit(dest_img, (x, y))
-    return y + h + theme.s(1)
+    y = draw.draw_center_line(surface, route_lines[0], y, body_font, origin_color)
+    y = draw.draw_center_line(surface, route_lines[1], y, body_font, dest_color)
+    return y + theme.s(1)
 
 
 def _draw_aircraft_type(surface, data, y: int, font) -> int:
@@ -544,7 +563,7 @@ def _draw_aircraft_type(surface, data, y: int, font) -> int:
 
 def _draw_progress_bar(surface, data, y: int) -> int:
     bar_h = theme.s(5)
-    icon_pad = theme.s(4)
+    icon_pad = theme.s(36)
     half_w = draw.circle_half_width_at_row(y, bar_h + icon_pad * 2)
     bar_w = max(theme.s(80), half_w * 2 - theme.s(16))
     x0 = theme.CENTER_X - bar_w // 2
@@ -574,7 +593,7 @@ def _draw_progress_bar(surface, data, y: int) -> int:
     plane_x = x0 + margin + int(usable * progress)
     plane_y = bar_y + bar_h // 2
     plane_color = theme.AIRCRAFT if is_live else theme.TAG_ALT_DESCEND
-    aircraft.draw_progress_plane(surface, plane_x, plane_y, plane_color)
+    aircraft.draw_progress_plane(surface, plane_x, plane_y, plane_color, flight=data)
 
     return bar_y + bar_h + icon_pad
 

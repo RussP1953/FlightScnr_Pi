@@ -30,10 +30,12 @@ class TestAirportsModule:
         """Create a small test airports.json for testing."""
         from utilities.airports import CACHE_VERSION
         db = {
-            "ORD": {"lat": 41.978, "lon": -87.904},
-            "KORD": {"lat": 41.978, "lon": -87.904},
-            "JFK": {"lat": 40.6413, "lon": -73.7781},
-            "KJFK": {"lat": 40.6413, "lon": -73.7781},
+            "ORD": {"lat": 41.978, "lon": -87.904, "name": "Chicago"},
+            "KORD": {"lat": 41.978, "lon": -87.904, "name": "Chicago"},
+            "JFK": {"lat": 40.6413, "lon": -73.7781, "name": "New York"},
+            "KJFK": {"lat": 40.6413, "lon": -73.7781, "name": "New York"},
+            "SFO": {"lat": 37.6198, "lon": -122.3748, "name": "San Francisco"},
+            "KSFO": {"lat": 37.6198, "lon": -122.3748, "name": "San Francisco"},
             "EGLL": {"lat": 51.4775, "lon": -0.4614},
             "LHR": {"lat": 51.4775, "lon": -0.4614},
             "NBO": {"lat": -1.3192, "lon": 36.9278},  # Nairobi (near equator)
@@ -155,6 +157,18 @@ class TestAirportsModule:
             # EGLL → LHR (shares same coords)
             result = airports_mod.icao_to_iata("EGLL")
             assert result == "LHR"
+
+    def test_format_route_endpoint_with_city(self):
+        import utilities.airports as airports_mod
+        tmpdir = tempfile.mkdtemp()
+        cache_path, _db = self._make_test_db(tmpdir)
+
+        with patch.object(airports_mod, 'CACHE_FILE', cache_path):
+            airports_mod._loaded = False
+            airports_mod._db = {}
+            assert airports_mod.format_route_endpoint("SFO") == "SFO, San Francisco"
+            assert airports_mod.format_route_endpoint("JFK") == "JFK, New York"
+            assert airports_mod.get_airport_name("KSFO") == "San Francisco"
 
     def test_icao_to_iata_kprefix(self):
         """icao_to_iata strips K for US airports."""

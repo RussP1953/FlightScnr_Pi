@@ -23,6 +23,27 @@ def local_offset_km(lat: float, lon: float, center_lat=None, center_lon=None):
     return dx_km, dy_km, dist_km
 
 
+def distance_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Great-circle distance in km between two WGS84 points (flat-earth)."""
+    lat_rad = math.radians(lat1)
+    dx = (lon2 - lon1) * 111.320 * math.cos(lat_rad)
+    dy = (lat2 - lat1) * 110.574
+    return math.hypot(dx, dy)
+
+
+def fetch_max_km():
+    """Max ground distance for aircraft fetch and rim blips."""
+    band = scale.active_band()
+    screen_r = theme.VISIBLE_RADIUS - theme.BEYOND_RING_MARGIN
+    return band["coverage_km"] * (screen_r / theme.GRID_OUTER_RADIUS)
+
+
+def visible_max_km():
+    """Ground distance at the visible circle edge for the active range."""
+    outer_km = scale.active_band()["label_km"]
+    return outer_km * theme.VISIBLE_RADIUS / theme.GRID_OUTER_RADIUS
+
+
 def inner_ring_max_km():
     outer_km = scale.active_band()["label_km"]
     inset = theme.AIRCRAFT_ICON_RADIUS + theme.s(2)

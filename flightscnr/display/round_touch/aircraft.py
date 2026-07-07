@@ -56,15 +56,45 @@ def _draw_silhouette(surface, cx, cy, heading_deg, color, scale: float):
         pygame.draw.polygon(surface, color, pts)
 
 
-def draw_plane_icon(surface, cx, cy, heading_deg, color, compact=False):
-    """Filled chunky top-down jet icon."""
+def draw_plane_icon(surface, cx, cy, heading_deg, color, compact=False, flight=None):
+    """Filled top-down aircraft icon — categorized PNG when assets are available."""
+    from display.round_touch import aircraft_type_icons
+
+    size = theme.s(22) if compact else theme.s(34)
+    if aircraft_type_icons.draw_icon(
+        surface,
+        flight,
+        (int(cx), int(cy)),
+        heading_deg,
+        color,
+        size=size,
+    ):
+        return
     scale = 0.40 if compact else 0.68
     _draw_silhouette(surface, cx, cy, heading_deg, color, scale)
 
 
-def draw_progress_plane(surface, cx, cy, color):
-    """Progress-bar marker — same icon, nose points right."""
-    scale = max(0.65, theme.s(0.58))
+def draw_progress_plane(surface, cx, cy, color, flight=None):
+    """Progress-bar marker — categorized icon when available, nose points right."""
+    from display.round_touch import aircraft_type_icons
+
+    flight_dict = None
+    if flight is not None:
+        flight_dict = dict(flight)
+        if not flight_dict.get("plane"):
+            flight_dict["plane"] = flight_dict.get("aircraft_type") or ""
+
+    size = theme.s(80)
+    if aircraft_type_icons.draw_icon(
+        surface,
+        flight_dict,
+        (int(cx), int(cy)),
+        90.0,
+        color,
+        size=size,
+    ):
+        return
+    scale = size / 26.0
     _draw_silhouette(surface, cx, cy, 90, color, scale)
 
 

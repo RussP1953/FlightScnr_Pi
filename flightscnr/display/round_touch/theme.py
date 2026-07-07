@@ -3,26 +3,75 @@
 REF_SIZE = 390
 
 try:
-    from config import DISPLAY_WIDTH, DISPLAY_HEIGHT
+    from config import square_framebuffer_side
 except ImportError:
-    DISPLAY_WIDTH = 1080
-    DISPLAY_HEIGHT = 1080
 
-# Square reference used for scaling (round panel diameter).
-SIZE = min(DISPLAY_WIDTH, DISPLAY_HEIGHT)
-SCALE = SIZE / REF_SIZE
-
-# Round viewport: centered on the framebuffer; only the circle shows through the bezel.
-CENTER_X = DISPLAY_WIDTH // 2
-CENTER_Y = DISPLAY_HEIGHT // 2
+    def square_framebuffer_side() -> int:
+        return 720
 
 
 def s(value: float) -> int:
     return max(1, int(round(value * SCALE)))
 
 
-BEZEL_INSET = s(10)
-VISIBLE_RADIUS = SIZE // 2 - BEZEL_INSET
+def _apply_framebuffer_side(side: int) -> None:
+    """Recompute layout constants for a square draw buffer."""
+    global SIZE, SCALE, CENTER_X, CENTER_Y, BEZEL_INSET, VISIBLE_RADIUS
+    global GRID_OUTER_RADIUS, CARDINAL_NORTH_OFFSET_Y, CARDINAL_SOUTH_OFFSET_Y
+    global CARDINAL_DIAGONAL_INSET, SCALE_GAP_FROM_OUTER_RING, SCALE_GAP_OUTER_RING_KM
+    global GRID_DASH_LEN, GRID_DASH_GAP, AIRCRAFT_ICON_RADIUS, AIRCRAFT_LABEL_GAP
+    global BEYOND_RING_MARGIN, SWEEP_RADIUS, TAP_PICK_RADIUS
+    global FONT_TITLE, FONT_BODY, FONT_DETAIL, FONT_CLOCK, FONT_CLOCK_AMPM
+    global FONT_CARDINAL, FONT_CARDINAL_DIAG, FONT_TAG, FONT_TAG_SUB
+
+    SIZE = side
+    SCALE = SIZE / REF_SIZE
+    CENTER_X = SIZE // 2
+    CENTER_Y = SIZE // 2
+    # Thin rim so sweep/tags are not clipped by the physical round bezel.
+    BEZEL_INSET = max(2, s(3))
+    VISIBLE_RADIUS = SIZE // 2 - BEZEL_INSET
+    GRID_OUTER_RADIUS = VISIBLE_RADIUS - 2
+    CARDINAL_NORTH_OFFSET_Y = s(10)
+    CARDINAL_SOUTH_OFFSET_Y = s(10)
+    CARDINAL_DIAGONAL_INSET = s(14)
+    SCALE_GAP_FROM_OUTER_RING = s(12)
+    SCALE_GAP_OUTER_RING_KM = s(20)
+    GRID_DASH_LEN = s(7)
+    GRID_DASH_GAP = s(15)
+    AIRCRAFT_ICON_RADIUS = s(15)
+    AIRCRAFT_LABEL_GAP = s(3)
+    BEYOND_RING_MARGIN = s(3)
+    SWEEP_RADIUS = VISIBLE_RADIUS - BEYOND_RING_MARGIN
+    TAP_PICK_RADIUS = s(36)
+    FONT_TITLE = s(28)
+    FONT_BODY = s(22)
+    FONT_DETAIL = s(18)
+    FONT_CLOCK = s(64)
+    FONT_CLOCK_AMPM = s(36)
+    FONT_CARDINAL = s(15)
+    FONT_CARDINAL_DIAG = s(15)
+    FONT_TAG = s(15)
+    FONT_TAG_SUB = s(15)
+
+
+def set_framebuffer_side(side: int) -> None:
+    """Match layout to the physical display (call after pygame set_mode)."""
+    side = int(side)
+    if side < 100:
+        raise ValueError(f"framebuffer side too small: {side}")
+    if side == SIZE:
+        return
+    _apply_framebuffer_side(side)
+    try:
+        from display.round_touch import draw
+
+        draw.invalidate_bezel_cache()
+    except ImportError:
+        pass
+
+
+_apply_framebuffer_side(square_framebuffer_side())
 
 # Colors (FlightScnr radar_theme.h)
 BG = (2, 15, 3)
@@ -40,34 +89,16 @@ HINT = (120, 140, 160)
 MUTED = (180, 200, 220)
 ROUTE = (100, 220, 255)
 LIVE = (56, 168, 255)
-LIVE_DIM = (12, 42, 80)
+LIVE_DIM = (28, 84, 128)
+ALERT_MILITARY = (255, 165, 0)
+ALERT_EMERGENCY = (255, 0, 0)
+ALERT_FLASH = (255, 0, 0)
+ALERT_WATCH = (255, 220, 80)
 
-GRID_OUTER_RADIUS = min(s(174), VISIBLE_RADIUS - s(16))
-CARDINAL_NORTH_OFFSET_Y = s(10)
-CARDINAL_SOUTH_OFFSET_Y = s(10)
-CARDINAL_DIAGONAL_INSET = s(6)
-SCALE_GAP_FROM_OUTER_RING = s(12)
-SCALE_GAP_OUTER_RING_KM = s(20)
 SCALE_LABEL_BEARING_DEG = 245.5
 RING_COUNT = 3
-GRID_DASH_LEN = s(7)
-GRID_DASH_GAP = s(15)
-AIRCRAFT_ICON_RADIUS = s(15)
-AIRCRAFT_LABEL_GAP = s(3)
-BEYOND_RING_MARGIN = s(3)
 SWEEP_PERIOD_MS = 6000
 SWEEP_FRAME_MS = 33
-SWEEP_RADIUS = VISIBLE_RADIUS - BEYOND_RING_MARGIN
-TAP_PICK_RADIUS = s(36)
-
-FONT_TITLE = s(28)
-FONT_BODY = s(22)
-FONT_DETAIL = s(18)
-FONT_CLOCK = s(64)
-FONT_CLOCK_AMPM = s(36)
-FONT_CARDINAL = s(23)
-FONT_TAG = s(21)
-FONT_TAG_SUB = s(17)
 
 
 def in_visible_circle(x: float, y: float, margin: float = 0) -> bool:

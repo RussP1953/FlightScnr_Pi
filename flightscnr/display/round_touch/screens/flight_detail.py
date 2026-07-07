@@ -4,6 +4,7 @@ from display.round_touch import aircraft, draw, geo, nav, theme
 from display.round_touch.screens import common
 from utilities.airline_branding import display_flight_id_for_flight
 from utilities.icao_types import format_aircraft_type
+from utilities.route_labels import route_display_lines
 
 FOOTER_BUTTONS = ("prev", "next", "radar")
 FOOTER_EMPTY = ("radar",)
@@ -68,8 +69,10 @@ def draw_flight_detail(surface, flights, selected_index, scroll_offset: int = 0)
     rows: list[tuple[str, object, tuple[int, int, int]]] = [
         (callsign, title_font, theme.LABEL),
         (airline, body_font, theme.MUTED),
-        (f"{origin} > {dest}", body_font, theme.ROUTE),
     ]
+    route_y = chrome_top + theme.s(72)
+    for route_line in route_display_lines(origin, dest, font=body_font, y=route_y):
+        rows.append((route_line, body_font, theme.ROUTE))
     if plane_type:
         rows.append((plane_type, detail_font, theme.MUTED))
     if telemetry:

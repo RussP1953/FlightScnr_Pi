@@ -8,7 +8,7 @@ import requests
 logger = logging.getLogger(__name__)
 
 API_BASE = "https://opendata.adsb.fi/api/v3/lat/"
-_CACHE = {"entries": [], "ts": 0.0}
+_CACHE = {"entries": [], "ts": 0.0, "radius_nm": None}
 _CACHE_TTL_S = 2
 
 
@@ -37,6 +37,24 @@ def _valid_position(lat, lon) -> bool:
     if abs(lat_f) < 0.01 and abs(lon_f) < 0.01:
         return False
     return -90 <= lat_f <= 90 and -180 <= lon_f <= 180
+
+
+def normalize_squawk(value) -> str:
+    """Normalize squawk to a 4-digit code string (matches FlightScnr firmware)."""
+    if value is None or value == "":
+        return ""
+    try:
+        code = int(float(value))
+        if 0 <= code <= 7777:
+            return f"{code:04d}"
+    except (TypeError, ValueError):
+        pass
+    digits = "".join(ch for ch in str(value).strip() if ch.isdigit())
+    if not digits:
+        return ""
+    if len(digits) > 4:
+        digits = digits[-4:]
+    return digits.zfill(4)
 
 
 def _to_entry(plane: dict, min_altitude: int) -> dict | None:
@@ -76,8 +94,16 @@ def _to_entry(plane: dict, min_altitude: int) -> dict | None:
     except (TypeError, ValueError):
         vert = 0
 
+    try:
+        db_flags = int(plane.get("dbFlags") or 0)
+    except (TypeError, ValueError):
+        db_flags = 0
+    squawk = normalize_squawk(plane.get("squawk"))
+    icao_hex = (plane.get("hex") or "").strip().upper()
+
     return {
         "callsign": callsign,
+        "icao_hex": icao_hex,
         "airline": airline,
         "plane": plane_type,
         "origin": "",
@@ -88,6 +114,8 @@ def _to_entry(plane: dict, min_altitude: int) -> dict | None:
         "ground_speed": gs,
         "heading": heading,
         "vertical_speed": vert,
+        "squawk": squawk,
+        "db_flags": db_flags,
         "data_source": "adsb_fi",
     }
 
@@ -101,7 +129,11 @@ def fetch_aircraft_entries(
     """Return flight dicts compatible with overhead/radar display."""
     global _CACHE
     now = time.time()
-    if now - _CACHE["ts"] < _CACHE_TTL_S and _CACHE["entries"]:
+    if (
+        now - _CACHE["ts"] < _CACHE_TTL_S
+        and _CACHE["entries"]
+        and _CACHE["radius_nm"] == radius_nm
+    ):
         return _CACHE["entries"]
 
     url = f"{API_BASE}{lat:.6f}/lon/{lon:.6f}/dist/{radius_nm:.1f}"
@@ -124,5 +156,6 @@ def fetch_aircraft_entries(
 
     _CACHE["entries"] = entries
     _CACHE["ts"] = now
+    _CACHE["radius_nm"] = radius_nm
     logger.info("adsb.fi: %d aircraft within %.1fnm of %.4f,%.4f", len(entries), radius_nm, lat, lon)
     return entries

@@ -90,6 +90,14 @@ def content_bottom_y(footer_y_offset: int = 0) -> int:
     return top - theme.s(10)
 
 
+def attribution_y(footer_y_offset: int = 0) -> int:
+    """Y coordinate for Tomorrow.io attribution — near the bottom rim, below footer buttons."""
+    top, band_h = _footer_band(footer_y_offset)
+    footer_bottom = top + band_h
+    near_rim = theme.CENTER_Y + theme.VISIBLE_RADIUS - theme.s(20)
+    return max(footer_bottom + theme.s(8), near_rim)
+
+
 def scroll_step() -> int:
     return theme.s(36)
 

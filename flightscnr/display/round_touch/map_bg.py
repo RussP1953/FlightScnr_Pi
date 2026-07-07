@@ -38,7 +38,7 @@ OSM_TILE_DELAY_S = 0.55  # OSM tile usage policy: max ~2 requests/second
 CARTO_TILE_WORKERS = 4
 OSM_TILE_WORKERS = 2
 CACHE_TTL_S = 7 * 24 * 3600
-CACHE_STYLE_VERSION = 8  # bump when map tint/placement changes to invalidate old caches
+CACHE_STYLE_VERSION = 11  # bump when map tint/placement changes to invalidate old caches
 
 _lock = threading.Lock()
 _surfaces: dict[tuple, pygame.Surface] = {}

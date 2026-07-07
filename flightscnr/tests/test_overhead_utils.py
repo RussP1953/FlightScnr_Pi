@@ -452,3 +452,51 @@ class TestOrdinal:
         assert ordinal(21) == "21st"
         assert ordinal(22) == "22nd"
         assert ordinal(23) == "23rd"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Zone Feed Enrichment Tests
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestZoneFeedEnrichment:
+    def test_enrich_adsb_entry_from_live_feed(self):
+        from utilities.fr24_client import LiveFlight
+        from utilities.overhead import (
+            _enrich_entry_from_zone_feed,
+            _index_zone_flights_by_callsign,
+            _lookup_zone_flight,
+        )
+
+        lf = LiveFlight(
+            flight_id="abc",
+            latitude=37.5,
+            longitude=-122.0,
+            altitude=25000,
+            ground_speed=400,
+            heading=90,
+            vertical_speed=0,
+            callsign="AMX665",
+            registration="XA-ABC",
+            origin_airport_iata="MEX",
+            destination_airport_iata="SFO",
+            airline_icao="AMX",
+            airline_iata="AM",
+            aircraft_code="B38M",
+            on_ground=False,
+            eta=0,
+        )
+        index = _index_zone_flights_by_callsign([lf])
+        assert _lookup_zone_flight(index, "AMX665") is lf
+
+        entry = {
+            "callsign": "AMX665",
+            "plane_latitude": 37.5,
+            "plane_longitude": -122.0,
+            "data_source": "adsb_fi",
+        }
+        assert _enrich_entry_from_zone_feed(entry, lf) is True
+        assert entry["origin"] == "MEX"
+        assert entry["destination"] == "SFO"
+        assert entry["plane"] == "B38M"
+        assert entry.get("owner_icao") == "AMX"
+        assert entry.get("distance") is not None

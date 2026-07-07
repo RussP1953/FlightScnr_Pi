@@ -1,17 +1,14 @@
 """
 airlabs.py — Flight schedule lookup via AirLabs API.
 
-Used to get departure/arrival info for flights that haven't taken off yet.
-The FR24 gRPC feed only shows airborne flights — AirLabs fills the gap
-for pre-departure schedule data.
+Used for:
+- Pinned pre-departure tracked flights (when FR24 has no live position yet)
+- Flight detail screen route enrichment when origin/destination are missing
+
+The FR24 gRPC feed covers airborne aircraft; AirLabs fills schedule gaps on demand.
 
 Free tier: 1000 credits/month, 1 credit per /schedules call.
 API key set via AIRLABS_API_KEY env var or config.
-
-Usage:
-    from utilities.airlabs import get_flight_schedule
-    sched = get_flight_schedule("UA353")
-    # {"origin": "EWR", "destination": "LAX", "dep_time": "2026-05-11 18:30", ...}
 """
 
 import logging
@@ -25,7 +22,7 @@ logger = logging.getLogger(__name__)
 _API_BASE = "https://airlabs.co/api/v9"
 
 # Module-level cache: callsign -> (result, timestamp)
-# Prevents repeated API calls for the same flight (web UI + overhead.py)
+# Shared by tracked pre-departure lookup and flight detail enrichment (5-minute TTL).
 _cache = {}
 _CACHE_TTL = 300  # 5 minutes
 

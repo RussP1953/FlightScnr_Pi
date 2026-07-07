@@ -8,16 +8,25 @@ def format_speed(ground_speed) -> str | None:
     if ground_speed is None or ground_speed <= 0:
         return None
     kts = float(ground_speed)
-    if settings.distance_in_miles():
+    units = settings.distance_units()
+    if units == "mi":
         return f"{int(kts * 1.15078)} mph"
+    if units == "nm":
+        return f"{int(kts)} kts"
     return f"{int(kts * 1.852)} km/h"
 
 
 def format_local_distance(dist_km: float) -> str:
-    if settings.distance_in_miles():
+    units = settings.distance_units()
+    if units == "mi":
         dist_mi = dist_km / 1.609344
         if dist_mi >= 0.1:
             return f"{dist_mi:.1f} mi"
+        return f"{dist_km * 3280.84:.0f} ft"
+    if units == "nm":
+        dist_nm = dist_km / 1.852
+        if dist_nm >= 0.1:
+            return f"{dist_nm:.1f} nm"
         return f"{dist_km * 3280.84:.0f} ft"
     if dist_km >= 1:
         return f"{dist_km:.1f} km"

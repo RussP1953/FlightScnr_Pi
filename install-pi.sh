@@ -79,7 +79,7 @@ install_ui_fonts() {
         local tmp
         tmp=$(mktemp -d)
         if curl -fsSL -o "$tmp/Inter.zip" \
-            "https://github.com/rsms/inter/releases/download/v4.1/Inter-4.1.zip"; then
+            "https://github.com/yashmulgaonkar/inter/releases/download/v4.1/Inter-4.1.zip"; then
             unzip -qo -j "$tmp/Inter.zip" \
                 "extras/ttf/Inter-Regular.ttf" "extras/ttf/Inter-Bold.ttf" \
                 -d "$inter_dir"
@@ -91,6 +91,61 @@ install_ui_fonts() {
     else
         log_ok "Inter fonts ready"
     fi
+}
+
+install_aircraft_icons() {
+    local src_repo="https://github.com/yashmulgaonkar/adsb-tracker"
+    local dest="$APP_DIR/assets/aircraft/icons"
+    local stamp="$dest/.installed"
+
+    log_step "Aircraft radar icons"
+    mkdir -p "$dest"
+
+    if [ -f "$stamp" ] && [ -f "$dest/medium-jet.png" ] && [ -f "$dest/aircraft-icons.json" ]; then
+        log_ok "Aircraft icons already present ($dest)"
+        return 0
+    fi
+
+    local tmp
+    tmp=$(mktemp -d)
+    if git clone --depth 1 "$src_repo" "$tmp/repo" >/dev/null 2>&1; then
+        cp "$tmp/repo/public/assets/icons/"*.png "$dest/" 2>/dev/null || true
+        cp "$tmp/repo/public/assets/icons/aircraft-icons.json" "$dest/" 2>/dev/null || true
+        date -Iseconds > "$stamp"
+        log_ok "Downloaded aircraft icons to assets/aircraft/icons"
+    else
+        log_warn "Could not download aircraft icons — radar will use vector fallback shapes"
+    fi
+    rm -rf "$tmp"
+}
+
+install_weather_icons() {
+    local dest="$APP_DIR/assets/weather/png"
+    local sun_dest="$APP_DIR/assets/weather/sun"
+    local stamp="$dest/.installed"
+
+    log_step "Tomorrow.io weather icons"
+    mkdir -p "$dest" "$sun_dest"
+
+    if [ -f "$stamp" ] && [ "$(find "$dest" -maxdepth 1 -name '*_large.png' | wc -l)" -ge 100 ] \
+        && [ -f "$sun_dest/sunrise-dark@2x.png" ] && [ -f "$sun_dest/sunset-dark@2x.png" ]; then
+        log_ok "Weather icons already present ($dest)"
+        return 0
+    fi
+
+    local tmp
+    tmp=$(mktemp -d)
+    if git clone --depth 1 https://github.com/Tomorrow-IO-API/tomorrow-weather-codes.git "$tmp/repo" >/dev/null 2>&1; then
+        cp "$tmp/repo/V2_icons/large/png/"*_large.png "$dest/" 2>/dev/null || true
+        rm -f "$dest/"*@2x.png
+        cp "$tmp/repo/V2_icons/small/sunset-sunrise/png/sunrise-dark@2x.png" "$sun_dest/" 2>/dev/null || true
+        cp "$tmp/repo/V2_icons/small/sunset-sunrise/png/sunset-dark@2x.png" "$sun_dest/" 2>/dev/null || true
+        date -Iseconds > "$stamp"
+        log_ok "Downloaded Tomorrow.io icons to assets/weather/png"
+    else
+        log_warn "Could not download weather icons — clock/forecast will use fallback shapes"
+    fi
+    rm -rf "$tmp"
 }
 
 extract_logos() {
@@ -140,24 +195,24 @@ setup_data_dir() {
 setup_env_file() {
     if [ -f "$ENV_DEST" ]; then
         log_ok "$ENV_DEST already exists — keeping current configuration"
-        return 0
-    fi
-
-    log_step "Creating $ENV_DEST"
-    if [ -f "$REPO_ROOT/.env" ]; then
-        cp "$REPO_ROOT/.env" "$ENV_DEST"
-        log_ok "Copied .env → $ENV_DEST"
     else
-        cp "$REPO_ROOT/.env.example" "$ENV_DEST"
-        log_ok "Copied .env.example → $ENV_DEST"
-        echo ""
-        echo "  !! Edit $ENV_DEST and add your API keys before starting the service !!"
-        echo "     sudo nano $ENV_DEST"
-        echo ""
+        log_step "Creating $ENV_DEST"
+        if [ -f "$REPO_ROOT/.env" ]; then
+            cp "$REPO_ROOT/.env" "$ENV_DEST"
+            log_ok "Copied .env → $ENV_DEST"
+        else
+            cp "$REPO_ROOT/.env.example" "$ENV_DEST"
+            log_ok "Copied .env.example → $ENV_DEST"
+        fi
+        chown root:root "$ENV_DEST"
+        chmod 0600 "$ENV_DEST"
     fi
 
-    chown root:root "$ENV_DEST"
-    chmod 0600 "$ENV_DEST"
+    if [ ! -f "$REPO_ROOT/config.h" ]; then
+        log_warn "config.h missing — create one from the repo template after install"
+    else
+        log_ok "config.h found — edit API keys there or use the web portal"
+    fi
 }
 
 install_systemd_service() {
@@ -223,6 +278,8 @@ cmd_install() {
 
     install_apt_packages
     install_ui_fonts
+    install_weather_icons
+    install_aircraft_icons
     extract_logos
     setup_venv
     setup_data_dir
@@ -243,7 +300,8 @@ cmd_install() {
     echo ""
     echo "  Service:   sudo systemctl status flightscnr"
     echo "  Logs:      sudo journalctl -u flightscnr -f"
-    echo "  Config:    sudo nano /etc/flightscnr.env"
+    echo "  Config:    edit $REPO_ROOT/config.h  OR  web portal → API Keys"
+    echo "             (advanced: sudo nano $ENV_DEST)"
     echo "  Reboot:    starts automatically (systemctl is-enabled flightscnr)"
     echo "  Update:    bash $REPO_ROOT/install-pi.sh update"
     echo ""

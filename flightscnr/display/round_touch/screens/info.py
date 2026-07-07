@@ -5,8 +5,15 @@ import socket
 import pygame
 
 try:
-    from config import LOCATION_HOME, web_portal_url
+    from config import (
+        AIRLABS_API_KEY,
+        FR24_API_KEY,
+        LOCATION_HOME,
+        web_portal_url,
+    )
 except ImportError:
+    FR24_API_KEY = ""
+    AIRLABS_API_KEY = ""
     LOCATION_HOME = [0.0, 0.0]
 
     def web_portal_url(hostname: str) -> str:
@@ -22,6 +29,8 @@ PAGE_COUNT = 3
 
 FOOTER_BUTTONS = ("prev", "next", "radar")
 
+DISPLAY_ROW_COUNT = 7
+
 
 def _hostname():
     return socket.gethostname().split(".")[0]
@@ -36,6 +45,12 @@ def _local_ip():
         return ip
     except OSError:
         return "Not connected"
+
+
+def _route_api_line(name: str, key: str) -> str:
+    if not key:
+        return f"{name}: no key"
+    return f"{name}: active"
 
 
 def _breadcrumb(page: int) -> list[str]:
@@ -67,7 +82,6 @@ def tap_footer_action(x: int, y: int) -> str | None:
 
 
 def _theme_row_metrics() -> tuple[int, int, int, int]:
-    """Return swatch_size, row_h, max_label_w, block_w for aligned theme rows."""
     body_font = draw.load_font(theme.FONT_BODY)
     swatch_size = theme.s(20)
     swatch_gap = theme.s(10)
@@ -100,11 +114,10 @@ def _display_layout() -> tuple[int, int, int]:
     body_font = draw.load_font(theme.FONT_BODY)
     row_y = top + theme.s(4)
     row_h = body_font.get_height() + theme.s(8)
-    return row_y, row_h, 5
+    return row_y, row_h, DISPLAY_ROW_COUNT
 
 
 def display_row_at(x: int, y: int) -> int | None:
-    """Return Display settings row index for a tap, or None."""
     row_y, row_h, count = _display_layout()
     body_font = draw.load_font(theme.FONT_BODY)
     for i in range(count):
@@ -139,6 +152,8 @@ def draw_info(surface, page: int, scroll_offset: int = 0, display_focus: int = 0
             f"Lon: {LOCATION_HOME[1]:.5f}",
             f"Min height: {settings.min_height_ft()} ft",
             f"Web: {web_portal_url(_hostname())}",
+            _route_api_line("FR24", FR24_API_KEY),
+            _route_api_line("AirLabs", AIRLABS_API_KEY),
         ]
         detail_font = draw.load_font(theme.FONT_DETAIL)
         gap = theme.s(2)
@@ -156,14 +171,18 @@ def draw_info(surface, page: int, scroll_offset: int = 0, display_focus: int = 0
         )
 
     elif page == PAGE_DISPLAY:
-        units = "miles" if settings.distance_in_miles() else "km"
+        units = settings.distance_units()
         rose = "on" if settings.show_compass_rose() else "off"
+        sweep = "on" if settings.show_sweep_line() else "off"
+        idle = "on" if settings.auto_idle_clock_enabled() else "off"
         rows = [
             f"Brightness: {settings.brightness_percent()}%",
             f"Units: {units}",
             f"Range: {settings.scale_label()}",
             f"Compass Rose: {rose}",
             f"Min height: {settings.min_height_ft()} ft",
+            f"Sweep line: {sweep}",
+            f"Idle clock: {idle}",
         ]
         y = top + theme.s(4)
         row_h = body_font.get_height() + theme.s(8)

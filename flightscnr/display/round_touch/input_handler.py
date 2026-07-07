@@ -1,4 +1,8 @@
-"""Touch swipe and tap detection (FlightScnr navigation)."""
+"""Touch swipe and tap detection (FlightScnr navigation).
+
+FROZEN — see gesture_handler.py and tests/test_gesture_handler.py.
+Swipes/taps use MOUSE events only (_USE_FINGER_EVENTS=False).
+"""
 
 import math
 
@@ -21,6 +25,16 @@ def _gesture_threshold_px() -> int:
         return max(26, int(theme.SIZE * 0.065))
     except ImportError:
         return 32
+
+
+def gesture_threshold_px() -> int:
+    return _gesture_threshold_px()
+
+
+def _logical_pos(pos) -> tuple[int, int]:
+    from display.round_touch import rotation
+
+    return rotation.to_logical(pos[0], pos[1])
 
 
 class TouchInput:
@@ -91,6 +105,24 @@ class TouchInput:
         self._pending_swipe_end = (int(ex), int(ey))
         self._register_swipe(ex - sx, ey - sy)
 
+    def is_dragging(self) -> bool:
+        """True while a mouse-button gesture is in progress."""
+        return self._start is not None
+
+    def blocks_pinch(self) -> bool:
+        """True once single-finger movement looks like a swipe (not a pinch setup)."""
+        if self._start is None:
+            return False
+        return self._max_dist >= _gesture_threshold_px() * 0.3
+
+    def cancel_gesture(self):
+        """Drop in-progress single-touch tracking (e.g. when a pinch starts)."""
+        self._start = None
+        self._drag_end = None
+        self._last_motion = None
+        self._max_dist = 0.0
+        self._clear_pending()
+
     def handle_event(self, event: pygame.event.Event):
         if event.type in (pygame.FINGERDOWN, pygame.FINGERUP) and not _USE_FINGER_EVENTS:
             return
@@ -99,7 +131,7 @@ class TouchInput:
             self._clear_pending()
             width = pygame.display.get_surface().get_width()
             height = pygame.display.get_surface().get_height()
-            self._start = (event.x * width, event.y * height)
+            self._start = _logical_pos((event.x * width, event.y * height))
             self._drag_end = self._start
             self._last_motion = self._start
             self._max_dist = 0.0
@@ -109,25 +141,25 @@ class TouchInput:
             width = pygame.display.get_surface().get_width()
             height = pygame.display.get_surface().get_height()
             sx, sy = self._start
-            ex, ey = event.x * width, event.y * height
+            ex, ey = _logical_pos((event.x * width, event.y * height))
             self._finish_pointer(sx, sy, ex, ey)
             return
 
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
             self._clear_pending()
-            self._start = event.pos
-            self._drag_end = event.pos
-            self._last_motion = event.pos
+            self._start = _logical_pos(event.pos)
+            self._drag_end = self._start
+            self._last_motion = self._start
             self._max_dist = 0.0
             return
 
         if event.type == pygame.MOUSEMOTION and self._start is not None and event.buttons[0]:
-            self._track_point(event.pos)
+            self._track_point(_logical_pos(event.pos))
             return
 
         if event.type == pygame.MOUSEBUTTONUP and event.button == 1 and self._start is not None:
             sx, sy = self._start
-            ex, ey = event.pos
+            ex, ey = _logical_pos(event.pos)
             self._finish_pointer(sx, sy, ex, ey)
 
     def consume_swipe(self) -> int:

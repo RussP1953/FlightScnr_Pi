@@ -49,7 +49,7 @@ except (ImportError, ModuleNotFoundError, NameError):
 try:
     from config import (
         ZONE_HOME, LOCATION_HOME, location_configured,
-        SEARCH_RADIUS_NM, ADSB_ENABLED,
+        SEARCH_RADIUS_NM, ADSB_ENABLED, zone_from_radius_nm,
     )
     ZONE_DEFAULT = ZONE_HOME
     LOCATION_DEFAULT = LOCATION_HOME
@@ -308,6 +308,101 @@ def _airline_name_lookup(icao_code):
     if _HAS_LOCAL_AIRLINES:
         return _local_airline_name(icao_code)
     return ""
+
+
+def _index_zone_flights_by_callsign(flights: list) -> dict[str, LiveFlight]:
+    """Map callsign aliases to the closest FR24 live-feed flight in the zone."""
+    from utilities.aircraft_alert import callsign_match_keys
+
+    index: dict[str, LiveFlight] = {}
+    for lf in flights:
+        for key in callsign_match_keys(lf.callsign):
+            existing = index.get(key)
+            if existing is None or distance_from_flight_to_home(lf) < distance_from_flight_to_home(existing):
+                index[key] = lf
+    return index
+
+
+def _lookup_zone_flight(index: dict[str, LiveFlight], callsign: str) -> LiveFlight | None:
+    from utilities.aircraft_alert import callsign_match_keys
+
+    for key in callsign_match_keys(callsign):
+        lf = index.get(key)
+        if lf is not None:
+            return lf
+    return None
+
+
+def _enrich_entry_from_zone_feed(entry: dict, lf: LiveFlight, stats: dict | None = None) -> bool:
+    """Merge route/type/airline from FR24 live feed without a details API call."""
+    enriched = False
+    origin = (lf.origin_airport_iata or "").strip()
+    destination = (lf.destination_airport_iata or "").strip()
+    if origin and not (entry.get("origin") or "").strip():
+        entry["origin"] = origin
+        enriched = True
+    if destination and not (entry.get("destination") or "").strip():
+        entry["destination"] = destination
+        enriched = True
+
+    plane = (lf.aircraft_code or "").strip()
+    if plane and not (entry.get("plane") or "").strip():
+        entry["plane"] = plane
+        enriched = True
+
+    callsign = (entry.get("callsign") or lf.callsign or "").strip()
+    airline_icao = resolve_logo_icao(
+        operator_icao=lf.airline_icao or "",
+        callsign=callsign,
+    )
+    owner_icao = airline_icao or entry.get("owner_icao") or ""
+    if plane in HELICOPTER_TYPES:
+        owner_icao = "HELI"
+        if stats is not None:
+            stats["helicopters"] = stats.get("helicopters", 0) + 1
+    if owner_icao:
+        entry["owner_icao"] = owner_icao
+        entry["airline_icao"] = airline_icao or owner_icao
+        enriched = True
+
+    if not (entry.get("airline") or "").strip():
+        brand = marketing_brand_name(callsign)
+        if brand:
+            entry["airline"] = brand
+            enriched = True
+        elif airline_icao:
+            local = _airline_name_lookup(airline_icao)
+            if local:
+                entry["airline"] = local
+                enriched = True
+                if stats is not None:
+                    stats["airline_lookups"] = stats.get("airline_lookups", 0) + 1
+
+    if origin:
+        coords = _airport_coords(origin)
+        if coords.get("lat") is not None:
+            entry["origin_latitude"] = coords["lat"]
+            entry["origin_longitude"] = coords["lon"]
+            if stats is not None:
+                stats["airport_lookups"] = stats.get("airport_lookups", 0) + 1
+    if destination:
+        coords = _airport_coords(destination)
+        if coords.get("lat") is not None:
+            entry["destination_latitude"] = coords["lat"]
+            entry["destination_longitude"] = coords["lon"]
+            if stats is not None:
+                stats["airport_lookups"] = stats.get("airport_lookups", 0) + 1
+
+    lat = entry.get("plane_latitude")
+    lon = entry.get("plane_longitude")
+    if lat is not None and lon is not None:
+        if entry.get("distance") is None:
+            entry["distance"] = haversine(lat, lon, LOCATION_DEFAULT[0], LOCATION_DEFAULT[1])
+        if not entry.get("direction"):
+            pos = type("_Pos", (), {"latitude": lat, "longitude": lon})()
+            entry["direction"] = degrees_to_cardinal(plane_bearing(pos))
+
+    return enriched
 
 
 def _evict_aircraft_cache():
@@ -600,6 +695,7 @@ class Overhead:
             f"│ adsbdb GA lookups:     {stats.get('adsbdb_lookups', 0)}",
             f"│ adsb.fi aircraft:      {stats.get('adsb_added', 0)}",
             f"│ adsb.fi refreshed:     {stats.get('adsb_updated', 0)}",
+            f"│ FR24 feed enriched:    {stats.get('feed_enriched', 0)}",
             f"│ Below min height:     {stats.get('altitude_dropped', 0)}",
             f"│ Helicopter detected:   {stats.get('helicopters', 0)}",
         ]
@@ -666,6 +762,7 @@ class Overhead:
             "adsbdb_lookups": 0,
             "adsb_added": 0,
             "adsb_updated": 0,
+            "feed_enriched": 0,
             "helicopters": 0,
             "tracked_status": "",
             "tracked_callsign": "",
@@ -674,6 +771,7 @@ class Overhead:
 
         try:
             # --- STEP 1: Check zone for overhead flights ---
+            zone_by_callsign: dict[str, LiveFlight] = {}
             if not location_configured():
                 logger.error(
                     "Location not configured — set HOME_LAT/HOME_LON or zone corners "
@@ -681,12 +779,18 @@ class Overhead:
                 )
                 flights = []
             else:
-                flights = self._api.get_flights(bounds=ZONE_DEFAULT)
+                from display.round_touch import scale, settings
+
+                search_radius_nm = scale.search_radius_nm(settings.scale_index())
+                search_zone = zone_from_radius_nm(search_radius_nm)
+                flights = self._api.get_flights(bounds=search_zone)
             stats["zone_raw"] = len(flights)
             flights = [f for f in flights if MIN_ALTITUDE <= f.altitude < MAX_ALTITUDE]
             stats["zone_filtered"] = len(flights)
             flights.sort(key=lambda f: distance_from_flight_to_home(f))
-            flights = flights[:MAX_FLIGHT_LOOKUP]
+            zone_flights_all = flights
+            zone_by_callsign = _index_zone_flights_by_callsign(zone_flights_all)
+            flights = zone_flights_all[:MAX_FLIGHT_LOOKUP]
 
             for f in flights:
                 retries = RETRIES
@@ -888,33 +992,96 @@ class Overhead:
             by_callsign: dict[str, dict] = {}
             if ADSB_ENABLED and location_configured():
                 from utilities.adsb_client import fetch_aircraft_entries
+                from display.round_touch import scale, settings
+
+                search_radius_nm = scale.search_radius_nm(settings.scale_index())
                 adsb_entries = fetch_aircraft_entries(
                     LOCATION_DEFAULT[0],
                     LOCATION_DEFAULT[1],
-                    SEARCH_RADIUS_NM,
+                    search_radius_nm,
                     MIN_ALTITUDE,
                 )
                 _LIVE_FIELDS = (
                     "plane_latitude", "plane_longitude", "altitude",
                     "heading", "ground_speed", "vertical_speed",
+                    "squawk", "db_flags", "icao_hex",
                 )
+                from utilities.aircraft_alert import (
+                    apply_adsb_alert_fields,
+                    callsign_match_keys,
+                    dedupe_flights,
+                    merge_live_fields,
+                )
+
+                def _maybe_feed_enrich(flight_dict: dict) -> None:
+                    if (flight_dict.get("origin") or "").strip() and (flight_dict.get("destination") or "").strip():
+                        return
+                    lf = _lookup_zone_flight(zone_by_callsign, flight_dict.get("callsign"))
+                    if lf is None:
+                        return
+                    if not _enrich_entry_from_zone_feed(flight_dict, lf, stats):
+                        return
+                    stats["feed_enriched"] += 1
+                    stats["flight_details"].append({
+                        "callsign": flight_dict.get("callsign", "?"),
+                        "plane": flight_dict.get("plane", "?"),
+                        "origin": flight_dict.get("origin", ""),
+                        "destination": flight_dict.get("destination", ""),
+                        "distance": flight_dict.get("distance", 0),
+                        "data_source": "fr24_feed+adsb",
+                    })
+
+                by_callsign.clear()
+                by_hex: dict[str, dict] = {}
                 for existing in overhead_data:
-                    cs = (existing.get("callsign") or "").strip().upper()
-                    if cs:
-                        by_callsign[cs] = existing
+                    hx = (existing.get("icao_hex") or "").strip().upper()
+                    if hx:
+                        by_hex[hx] = existing
+                    for key in callsign_match_keys(existing.get("callsign")):
+                        by_callsign[key] = existing
 
                 for entry in adsb_entries:
-                    cs = (entry.get("callsign") or "").strip().upper()
-                    if cs and cs in by_callsign:
-                        for field in _LIVE_FIELDS:
-                            by_callsign[cs][field] = entry[field]
+                    keys = callsign_match_keys(entry.get("callsign"))
+                    hx = (entry.get("icao_hex") or "").strip().upper()
+                    target = by_hex.get(hx) if hx else None
+                    if target is None:
+                        target = next((by_callsign[k] for k in keys if k in by_callsign), None)
+                    if target is None:
+                        from display.round_touch import geo
+
+                        lat = entry.get("plane_latitude")
+                        lon = entry.get("plane_longitude")
+                        if lat is not None and lon is not None:
+                            best = None
+                            best_d = None
+                            for existing in overhead_data:
+                                elat = existing.get("plane_latitude")
+                                elon = existing.get("plane_longitude")
+                                if elat is None or elon is None:
+                                    continue
+                                d = geo.distance_km(lat, lon, elat, elon)
+                                if d <= 0.45 and (best_d is None or d < best_d):
+                                    best_d = d
+                                    best = existing
+                            target = best
+                    if target is not None:
+                        merge_live_fields(target, entry, _LIVE_FIELDS)
+                        _maybe_feed_enrich(target)
                         stats["adsb_updated"] += 1
                         continue
+                    _maybe_feed_enrich(entry)
                     overhead_data.append(entry)
                     stats["adsb_added"] += 1
+                    cs = "".join((entry.get("callsign") or "").upper().split())
                     if cs:
-                        by_callsign[cs] = entry
+                        for key in keys:
+                            by_callsign[key] = entry
+                        if hx:
+                            by_hex[hx] = entry
                         log_flight_count(cs, entry)
+
+                apply_adsb_alert_fields(overhead_data, adsb_entries)
+                overhead_data = dedupe_flights(overhead_data)
 
             # --- STEP 2: Tracked flight (always check; display shows it when clock is up) ---
             tracked_callsign = load_tracked_callsign()
@@ -967,16 +1134,16 @@ class Overhead:
                             elif self._tracked_last_data:
                                 tracked_data = estimate_stale_data(self._tracked_last_data)
                     else:
-                        # Never been live — try AirLabs schedule
-                        # Cache successful results; retry on failure (airlabs module has 5-min TTL)
+                        # Never been live — try AirLabs schedule for pre-departure pinned flights.
+                        # Cache successful results; retry on failure (airlabs module has 5-min TTL).
                         sched = self._tracked_schedule_cache.get(tracked_callsign)
                         if sched is None:
                             from utilities.airlabs import get_flight_schedule
+
                             sched = get_flight_schedule(tracked_callsign)
                             if sched:
                                 self._tracked_schedule_cache[tracked_callsign] = sched
                         if sched:
-                            # Convert callsign to ICAO for logo lookup (UA353 → UAL353)
                             sched_cs = tracked_callsign
                             if len(sched_cs) >= 3 and sched_cs[:2] in IATA_TO_ICAO and sched_cs[2:3].isdigit():
                                 icao_pfx = IATA_TO_ICAO.get(sched_cs[:2])
@@ -1085,6 +1252,7 @@ class Overhead:
         self._tracked_last_eta = None
         self._tracked_last_data = None
         self._tracked_last_callsign = ""
+        self._tracked_schedule_cache.clear()
 
     def _grab_tracked(self, flight_input, zone_flights=None):
         flight_input = flight_input.strip().upper()

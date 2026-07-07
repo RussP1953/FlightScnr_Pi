@@ -94,6 +94,58 @@
             color: #721c24;
             display: block;
         }
+        #api-keys-status {
+            margin-top: 12px;
+            font-size: 14px;
+            min-height: 18px;
+            padding: 8px 10px;
+            border-radius: 4px;
+            display: none;
+        }
+        #api-keys-status.saved {
+            background: #e8f0fe;
+            border: 1px solid #90b4f7;
+            color: #1a3c87;
+            display: block;
+        }
+        #api-keys-status.error {
+            background: #fdecea;
+            border: 1px solid #f5c6cb;
+            color: #721c24;
+            display: block;
+        }
+        #weather-units-status {
+            margin-top: 12px;
+            font-size: 14px;
+            min-height: 18px;
+            padding: 8px 10px;
+            border-radius: 4px;
+            display: none;
+        }
+        #weather-units-status.saved {
+            background: #e8f0fe;
+            border: 1px solid #90b4f7;
+            color: #1a3c87;
+            display: block;
+        }
+        #weather-units-status.error {
+            background: #fdecea;
+            border: 1px solid #f5c6cb;
+            color: #721c24;
+            display: block;
+        }
+        .key-row { margin-bottom: 10px; }
+        .key-row label { display: block; font-size: 14px; color: #444; margin-bottom: 4px; }
+        .key-row input {
+            width: 100%;
+            max-width: 420px;
+            font-size: 15px;
+            padding: 6px 10px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            box-sizing: border-box;
+        }
+        .key-hint { font-size: 12px; color: #888; margin-top: 2px; }
         .confirm-row {
             margin-top: 10px;
             display: none;
@@ -128,6 +180,50 @@
     </div>
 
     <div class="track-box">
+        <h2>API Keys</h2>
+        <p id="api-keys-intro" style="color:#555; font-size:15px; margin-top:0;">Loading...</p>
+        <div class="key-row">
+            <label for="fr24-key">FlightRadar24 key</label>
+            <input type="password" id="fr24-key" placeholder="subscription_key|token" autocomplete="off" />
+            <div class="key-hint" id="fr24-hint"></div>
+        </div>
+        <div class="key-row">
+            <label for="tomorrow-key">Tomorrow.io weather key</label>
+            <input type="password" id="tomorrow-key" placeholder="Tomorrow.io API key" autocomplete="off" />
+            <div class="key-hint" id="tomorrow-hint"></div>
+        </div>
+        <div class="key-row">
+            <label for="airlabs-key">AirLabs key (optional)</label>
+            <input type="password" id="airlabs-key" placeholder="Pre-departure tracked + flight detail routes" autocomplete="off" />
+            <div class="key-hint" id="airlabs-hint"></div>
+        </div>
+        <div class="track-row" style="margin-top:12px;">
+            <button id="btn-keys-save" onclick="saveApiKeys(false)">Save keys</button>
+            <button id="btn-keys-restart" onclick="saveApiKeys(true)">Save &amp; restart app</button>
+        </div>
+        <div id="api-keys-status"></div>
+        <p class="note">Leave a field blank to keep the current value. Keys are stored on the Pi at <code>/var/lib/flightscnr/secrets.json</code>. You can also edit <code>config.h</code> in the project folder.</p>
+    </div>
+
+    <div class="track-box">
+        <h2>Weather Units</h2>
+        <p id="weather-units-current" style="color:#555; font-size:15px; margin-top:0;">Loading...</p>
+        <div class="track-row" style="align-items:center;">
+            <label style="margin-right:16px;">
+                <input type="radio" name="temp-units" id="temp-metric" value="metric"> Celsius (°C)
+            </label>
+            <label>
+                <input type="radio" name="temp-units" id="temp-imperial" value="imperial"> Fahrenheit (°F)
+            </label>
+        </div>
+        <div class="track-row" style="margin-top:10px;">
+            <button id="btn-weather-save" onclick="saveWeatherUnits()">Save</button>
+        </div>
+        <div id="weather-units-status"></div>
+        <p class="note">Applies to the clock and forecast screens. Saved on the Pi — no restart needed.</p>
+    </div>
+
+    <div class="track-box">
         <h2>Track a Flight</h2>
         <div id="current-tracked">Loading...</div>
         <div class="track-row">
@@ -152,6 +248,19 @@
             <button id="btn-route" onclick="searchRoute()">Search</button>
         </div>
         <div id="route-results" style="margin-top:12px; font-size:14px;"></div>
+    </div>
+
+    <div class="track-box">
+        <h2>Aircraft Alerts</h2>
+        <label><input type="checkbox" id="alert-mil"> Military aircraft</label><br>
+        <label><input type="checkbox" id="alert-emrg"> Emergency squawk (7700/7600/7500)</label><br>
+        <label><input type="checkbox" id="alert-hide"> Hide non-alerted aircraft on radar</label><br>
+        <div class="track-row" style="margin-top:10px;">
+            <input type="text" id="alert-watch" placeholder="Watch list: UAL123,DAL456" style="width:280px; text-transform:uppercase;" />
+            <button onclick="saveAlerts()">Save</button>
+        </div>
+        <div id="alert-status"></div>
+        <p class="note">When hide is on, only aircraft matching your enabled alerts are shown (military, emergency squawk, and/or watch list). Alerted aircraft pulse orange (military) or red (emergency) on the radar.</p>
     </div>
 
     <hr>
@@ -361,6 +470,160 @@
             btn.textContent = "Search";
         }
 
+        async function loadAlerts() {
+            try {
+                const res = await fetch("/alerts/json");
+                const data = await res.json();
+                document.getElementById("alert-mil").checked = !!data.alert_military;
+                document.getElementById("alert-emrg").checked = !!data.alert_emergency;
+                document.getElementById("alert-hide").checked = !!data.alert_hide_non_alerted;
+                document.getElementById("alert-watch").value = data.alert_watch || "";
+            } catch (e) {
+                document.getElementById("alert-status").textContent = "Could not load alert settings.";
+            }
+        }
+
+        async function saveAlerts() {
+            const body = {
+                alert_military: document.getElementById("alert-mil").checked,
+                alert_emergency: document.getElementById("alert-emrg").checked,
+                alert_hide_non_alerted: document.getElementById("alert-hide").checked,
+                alert_watch: document.getElementById("alert-watch").value.trim().toUpperCase(),
+            };
+            try {
+                const res = await fetch("/alerts", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(body),
+                });
+                if (!res.ok) throw new Error("save failed");
+                document.getElementById("alert-status").textContent = "Alert settings saved.";
+                document.getElementById("alert-status").style.color = "#2d6a4f";
+            } catch (e) {
+                document.getElementById("alert-status").textContent = "Could not save alert settings.";
+                document.getElementById("alert-status").style.color = "#721c24";
+            }
+        }
+
+        function setApiKeysStatus(msg, type) {
+            const el = document.getElementById("api-keys-status");
+            el.textContent = msg;
+            el.className = type;
+        }
+
+        function applyKeyHints(keys) {
+            const hints = {
+                FR24_API_KEY: "fr24-hint",
+                TOMORROW_API_KEY: "tomorrow-hint",
+                AIRLABS_API_KEY: "airlabs-hint",
+            };
+            for (const [key, elId] of Object.entries(hints)) {
+                const info = keys[key] || {};
+                const el = document.getElementById(elId);
+                if (!el) continue;
+                if (info.configured) {
+                    el.textContent = `Current: ${info.masked} (${info.source})`;
+                } else {
+                    el.textContent = "Not set";
+                }
+            }
+        }
+
+        async function loadApiKeys() {
+            try {
+                const res = await fetch("/api-keys/json");
+                const data = await res.json();
+                const configured = ["FR24_API_KEY", "TOMORROW_API_KEY"].filter(
+                    k => data[k] && data[k].configured
+                ).length;
+                document.getElementById("api-keys-intro").textContent =
+                    configured === 2
+                        ? "API keys are configured."
+                        : "Enter your API keys below. FR24 and Tomorrow.io are needed for the full experience.";
+                applyKeyHints(data);
+            } catch (e) {
+                document.getElementById("api-keys-intro").textContent = "Could not load API key status.";
+            }
+        }
+
+        async function saveApiKeys(restart) {
+            const body = {
+                fr24_api_key: document.getElementById("fr24-key").value,
+                tomorrow_api_key: document.getElementById("tomorrow-key").value,
+                airlabs_api_key: document.getElementById("airlabs-key").value,
+                restart: restart,
+            };
+            const btnSave = document.getElementById("btn-keys-save");
+            const btnRestart = document.getElementById("btn-keys-restart");
+            btnSave.disabled = true;
+            btnRestart.disabled = true;
+            setApiKeysStatus("", "");
+
+            try {
+                const res = await fetch("/api-keys", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(body),
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.message || "save failed");
+                document.getElementById("fr24-key").value = "";
+                document.getElementById("tomorrow-key").value = "";
+                document.getElementById("airlabs-key").value = "";
+                if (data.keys) applyKeyHints(data.keys);
+                setApiKeysStatus(data.message || "API keys saved.", "saved");
+            } catch (e) {
+                setApiKeysStatus("Could not save API keys.", "error");
+            }
+
+            btnSave.disabled = false;
+            btnRestart.disabled = false;
+        }
+
+        function setWeatherUnitsStatus(msg, type) {
+            const el = document.getElementById("weather-units-status");
+            el.textContent = msg;
+            el.className = type;
+        }
+
+        async function loadWeatherUnits() {
+            try {
+                const res = await fetch("/weather/json");
+                const data = await res.json();
+                document.getElementById("weather-units-current").textContent =
+                    `Current: ${data.label} (${data.symbol})`;
+                const metric = data.temperature_units !== "imperial";
+                document.getElementById("temp-metric").checked = metric;
+                document.getElementById("temp-imperial").checked = !metric;
+            } catch (e) {
+                document.getElementById("weather-units-current").textContent =
+                    "Could not load weather unit settings.";
+            }
+        }
+
+        async function saveWeatherUnits() {
+            const metric = document.getElementById("temp-metric").checked;
+            const units = metric ? "metric" : "imperial";
+            const btn = document.getElementById("btn-weather-save");
+            btn.disabled = true;
+            setWeatherUnitsStatus("", "");
+            try {
+                const res = await fetch("/weather", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ temperature_units: units }),
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.message || "save failed");
+                document.getElementById("weather-units-current").textContent =
+                    `Current: ${data.label} (${data.symbol})`;
+                setWeatherUnitsStatus(data.message || "Weather units saved.", "saved");
+            } catch (e) {
+                setWeatherUnitsStatus("Could not save weather units.", "error");
+            }
+            btn.disabled = false;
+        }
+
         document.addEventListener("DOMContentLoaded", () => {
             document.getElementById("callsign-input").addEventListener("keydown", e => {
                 if (e.key === "Enter") lookupAndTrack();
@@ -373,6 +636,9 @@
             });
             loadCurrent();
             loadLocation();
+            loadApiKeys();
+            loadWeatherUnits();
+            loadAlerts();
         });
     </script>
 </body>

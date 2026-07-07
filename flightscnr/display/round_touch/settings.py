@@ -14,12 +14,15 @@ MIN_HEIGHT_OPTIONS = (500, 1000, 1500)
 
 _defaults = {
     "brightness_percent": 100,
-    "distance_miles": False,
+    "distance_units": "km",
     "show_compass_rose": True,
+    "show_sweep": True,
     "scale_index": 1,
     "theme_index": color_presets.DEFAULT_THEME_INDEX,
     "clock_12hr": True,
+    "auto_timezone": True,
     "min_height_ft": 1000,
+    "auto_idle_clock": True,
 }
 
 
@@ -47,7 +50,7 @@ def _seed_from_env(state: dict) -> None:
         from config import DISTANCE_UNITS, MIN_HEIGHT, SEARCH_RADIUS_NM
         from display.round_touch import scale
 
-        state["distance_miles"] = DISTANCE_UNITS.strip().lower() == "imperial"
+        state["distance_units"] = "mi" if DISTANCE_UNITS.strip().lower() == "imperial" else "km"
         state["scale_index"] = scale.index_for_radius_nm(SEARCH_RADIUS_NM)
         state["min_height_ft"] = _snap_min_height(MIN_HEIGHT)
     except ImportError:
@@ -91,6 +94,15 @@ def _load():
         migrated = True
     else:
         state["min_height_ft"] = _snap_min_height(state["min_height_ft"])
+    if "distance_miles" in data and "distance_units" not in data:
+        state["distance_units"] = "mi" if data.get("distance_miles") else "km"
+        migrated = True
+    if "distance_miles" in state:
+        del state["distance_miles"]
+        migrated = True
+    if "distance_units" not in state:
+        state["distance_units"] = "km"
+        migrated = True
     if "tracked_stats_mode" in state:
         del state["tracked_stats_mode"]
         migrated = True
@@ -140,12 +152,39 @@ def set_brightness_percent(value: int):
     _save(_state)
 
 
+def distance_units() -> str:
+    units = str(_state.get("distance_units", "km")).lower()
+    if units not in ("km", "mi", "nm"):
+        return "km"
+    return units
+
+
 def distance_in_miles():
-    return bool(_state.get("distance_miles", False))
+    return distance_units() == "mi"
 
 
 def toggle_distance_units():
-    _state["distance_miles"] = not _state["distance_miles"]
+    order = ["km", "mi", "nm"]
+    cur = distance_units()
+    _state["distance_units"] = order[(order.index(cur) + 1) % len(order)]
+    _save(_state)
+
+
+def show_sweep_line() -> bool:
+    return bool(_state.get("show_sweep", True))
+
+
+def toggle_sweep_line():
+    _state["show_sweep"] = not show_sweep_line()
+    _save(_state)
+
+
+def auto_timezone_enabled() -> bool:
+    return bool(_state.get("auto_timezone", True))
+
+
+def toggle_auto_timezone():
+    _state["auto_timezone"] = not auto_timezone_enabled()
     _save(_state)
 
 
@@ -184,7 +223,7 @@ def cycle_scale():
 def scale_label() -> str:
     from display.round_touch import scale
 
-    return scale.format_band_tag(scale_index(), distance_in_miles())
+    return scale.format_band_tag(scale_index(), distance_units())
 
 
 def theme_index() -> int:
@@ -207,6 +246,15 @@ def use_12hr_clock() -> bool:
 
 def toggle_clock_format():
     _state["clock_12hr"] = not use_12hr_clock()
+    _save(_state)
+
+
+def auto_idle_clock_enabled() -> bool:
+    return bool(_state.get("auto_idle_clock", True))
+
+
+def toggle_auto_idle_clock():
+    _state["auto_idle_clock"] = not auto_idle_clock_enabled()
     _save(_state)
 
 

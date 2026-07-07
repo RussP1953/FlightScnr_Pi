@@ -99,7 +99,6 @@ def lookup_flight(callsign):
     Returns a dict with found=True/False and flight info if found.
     """
     callsign = callsign.strip().upper()
-    original_callsign = callsign  # preserve for AirLabs (IATA works better)
 
     # Convert IATA (UA353) to ICAO (UAL353)
     from utilities.overhead import IATA_TO_ICAO
@@ -115,22 +114,6 @@ def lookup_flight(callsign):
         match = api.find_by_callsign(callsign)
 
         if not match:
-            # Not airborne — try AirLabs for scheduled flight (use original IATA format)
-            from utilities.airlabs import get_flight_schedule
-            sched = get_flight_schedule(original_callsign)
-            if sched:
-                return {
-                    "found": True,
-                    "scheduled": True,
-                    "callsign": callsign,
-                    "number": sched.get("flight_number", callsign),
-                    "airline": "",
-                    "origin": sched.get("origin", "???"),
-                    "destination": sched.get("destination", "???"),
-                    "dep_time": sched.get("dep_time", ""),
-                    "status": sched.get("status", ""),
-                    "summary": f"Scheduled: {sched.get('flight_number', callsign)} {sched.get('origin', '?')}→{sched.get('destination', '?')} Dep {sched.get('dep_time', '?')}",
-                }
             return {"found": False}
 
         # Get full details for airline name and route
@@ -351,6 +334,98 @@ def airport_code():
             print(f"Reverse geocode failed: {e}")
 
     return jsonify({"code": code, "name": location_name})
+
+
+@app.get("/alerts/json")
+def alerts_json():
+    from display.round_touch import alert_prefs
+
+    alert_prefs.reload()
+    return jsonify(
+        {
+            "alert_military": alert_prefs.military_enabled(),
+            "alert_emergency": alert_prefs.emergency_enabled(),
+            "alert_hide_non_alerted": alert_prefs.hide_non_alerted(),
+            "alert_watch": alert_prefs.watch_blob(),
+        }
+    )
+
+
+@app.post("/alerts")
+def alerts_save():
+    from display.round_touch import alert_prefs
+
+    data = request.get_json(silent=True) or {}
+    alert_prefs.update(
+        alert_military=bool(data.get("alert_military", False)),
+        alert_emergency=bool(data.get("alert_emergency", False)),
+        alert_hide_non_alerted=bool(data.get("alert_hide_non_alerted", False)),
+        alert_watch=str(data.get("alert_watch", "") or ""),
+    )
+    return jsonify({"ok": True})
+
+
+@app.get("/api-keys/json")
+def api_keys_json():
+    from secrets_store import secrets_status
+
+    return jsonify(secrets_status())
+
+
+@app.post("/api-keys")
+def api_keys_save():
+    from secrets_store import request_service_restart, save_secrets_from_portal, secrets_status
+
+    data = request.get_json(silent=True) or {}
+    save_secrets_from_portal(data)
+    restarted = False
+    if data.get("restart"):
+        restarted = request_service_restart()
+    return jsonify({
+        "ok": True,
+        "restarted": restarted,
+        "keys": secrets_status(),
+        "message": (
+            "API keys saved and app restarted."
+            if restarted
+            else "API keys saved. Restart the app to apply on the display: sudo systemctl restart flightscnr"
+        ),
+    })
+
+
+@app.get("/weather/json")
+def weather_json():
+    import weather_prefs
+
+    weather_prefs.reload()
+    units = weather_prefs.temperature_units()
+    return jsonify(
+        {
+            "temperature_units": units,
+            "label": weather_prefs.portal_label(),
+            "symbol": weather_prefs.unit_symbol(),
+        }
+    )
+
+
+@app.post("/weather")
+def weather_save():
+    import weather_prefs
+
+    data = request.get_json(silent=True) or {}
+    raw = data.get("temperature_units") or data.get("units")
+    if raw is None:
+        return jsonify({"message": "temperature_units is required"}), 400
+    weather_prefs.update(temperature_units_value=str(raw))
+    return jsonify(
+        {
+            "ok": True,
+            "temperature_units": weather_prefs.temperature_units(),
+            "label": weather_prefs.portal_label(),
+            "symbol": weather_prefs.unit_symbol(),
+            "message": f"Weather units set to {weather_prefs.portal_label()}.",
+        }
+    )
 
 
 # Serve map files from the data directory

@@ -6,6 +6,9 @@ import time
 import pygame
 
 from display.round_touch import aircraft, draw, geo, map_bg, scale, settings, theme
+from display.round_touch import alert_prefs
+from utilities import aircraft_alert
+from utilities.overhead import load_tracked_callsign
 
 
 _sweep_angle = 0.0
@@ -64,22 +67,23 @@ def _draw_grid(surface):
             surface.blit(rendered, rect)
 
         diag_r = theme.GRID_OUTER_RADIUS - theme.CARDINAL_DIAGONAL_INSET
+        diag_font = draw.load_font(theme.FONT_CARDINAL_DIAG, bold=True)
         for label, angle in (("NE", 45), ("SE", 135), ("SW", 225), ("NW", 315)):
             rad = math.radians(angle - 90)
             x = theme.CENTER_X + int(diag_r * math.cos(rad))
             y = theme.CENTER_Y + int(diag_r * math.sin(rad))
-            rendered = font.render(label, True, theme.GRID)
+            rendered = diag_font.render(label, True, theme.GRID)
             rect = rendered.get_rect(center=(x, y))
             surface.blit(rendered, rect)
 
-    use_miles = settings.distance_in_miles()
+    use_units = settings.distance_units()
     scale_font = draw.load_font(theme.FONT_DETAIL)
     outer_km = scale.active_band()["label_km"]
     for ring in range(1, theme.RING_COUNT + 1):
         ring_km = outer_km * ring / theme.RING_COUNT
-        label = scale.format_scale_tag(ring_km, use_miles)
+        label = scale.format_scale_tag(ring_km, use_units)
         r = theme.GRID_OUTER_RADIUS * ring // theme.RING_COUNT
-        gap = theme.SCALE_GAP_OUTER_RING_KM if ring == theme.RING_COUNT and not use_miles else theme.SCALE_GAP_FROM_OUTER_RING
+        gap = theme.SCALE_GAP_OUTER_RING_KM if ring == theme.RING_COUNT and use_units == "km" else theme.SCALE_GAP_FROM_OUTER_RING
         label_r = r - gap
         rad = math.radians(theme.SCALE_LABEL_BEARING_DEG - 90)
         x = theme.CENTER_X + int(label_r * math.cos(rad))
@@ -148,11 +152,46 @@ def _above_min_height(flight) -> bool:
 
 
 def _visible_flights(flights):
-    return [f for f in flights if _above_min_height(f)]
+    visible = []
+    max_km = geo.fetch_max_km()
+    for f in flights:
+        if not _above_min_height(f):
+            continue
+        lat = f.get("plane_latitude")
+        lon = f.get("plane_longitude")
+        if lat is None or lon is None:
+            continue
+        if geo.local_offset_km(lat, lon)[2] > max_km:
+            continue
+        visible.append(f)
+    return visible
+
+
+def _is_tracked(flight) -> bool:
+    tracked = (load_tracked_callsign() or "").strip().upper()
+    if not tracked:
+        return False
+    cs = (flight.get("callsign") or "").strip().upper()
+    return cs == tracked or cs.startswith(tracked)
+
+
+def _flight_icon_color(flight, *, compact: bool):
+    if _is_tracked(flight) and not compact:
+        return theme.SWEEP
+    if aircraft_alert.is_highlighted(flight):
+        if aircraft_alert.pulse_phase():
+            return theme.ALERT_FLASH
+        return theme.GRID
+    return theme.AIRCRAFT
 
 
 def _draw_flights(surface, flights):
+    rim_items: list[tuple[float, dict, tuple[int, int]]] = []
+    inner_items: list[tuple[float, dict, tuple[int, int]]] = []
+
     for flight in _visible_flights(flights):
+        if not aircraft_alert.is_shown_on_radar(flight):
+            continue
         lat = flight.get("plane_latitude")
         lon = flight.get("plane_longitude")
         if lat is None or lon is None:
@@ -161,12 +200,46 @@ def _draw_flights(surface, flights):
         _, _, dist_km = geo.local_offset_km(lat, lon)
         if dist_km <= geo.inner_ring_max_km():
             x, y = geo.lat_lon_to_screen(lat, lon)
-            aircraft.draw_plane_icon(surface, x, y, heading, theme.AIRCRAFT)
-            _draw_aircraft_tag(surface, x, y, flight)
+            inner_items.append((dist_km, flight, (x, y)))
         else:
             pos = geo.beyond_ring_position(lat, lon)
             if pos:
-                aircraft.draw_plane_icon(surface, pos[0], pos[1], heading, theme.AIRCRAFT, compact=True)
+                rim_items.append((dist_km, flight, pos))
+
+    rim_items.sort(key=lambda item: item[0], reverse=True)
+    inner_items.sort(key=lambda item: item[0], reverse=True)
+
+    for _, flight, (x, y) in rim_items:
+        aircraft.draw_plane_icon(
+            surface,
+            x,
+            y,
+            flight.get("heading") or 0,
+            _flight_icon_color(flight, compact=True),
+            compact=True,
+            flight=flight,
+        )
+
+    for _, flight, (x, y) in inner_items:
+        heading = flight.get("heading") or 0
+        color = _flight_icon_color(flight, compact=False)
+        aircraft.draw_plane_icon(surface, x, y, heading, color, flight=flight)
+        _draw_aircraft_tag(surface, x, y, flight)
+
+
+def visible_in_range_count(flights) -> int:
+    """In-range aircraft on radar (excludes rim blips), matching FlightScnr idle-clock logic."""
+    count = 0
+    for flight in _visible_flights(flights):
+        if not aircraft_alert.is_shown_on_radar(flight):
+            continue
+        lat = flight.get("plane_latitude")
+        lon = flight.get("plane_longitude")
+        if lat is None or lon is None:
+            continue
+        if geo.local_offset_km(lat, lon)[2] <= geo.inner_ring_max_km():
+            count += 1
+    return count
 
 
 def _draw_status(surface, flights):
@@ -176,22 +249,12 @@ def _draw_status(surface, flights):
         location_configured = lambda: False
         location_status = lambda: ""
 
-    font = draw.load_font(theme.FONT_DETAIL)
-    scale_tag = scale.format_active_tag(settings.distance_in_miles())
-    y = theme.CENTER_Y - int(theme.VISIBLE_RADIUS * 0.62)
-
     visible = _visible_flights(flights)
     if visible:
-        header = f"{scale_tag}  ·  {len(visible)} aircraft"
-        color = theme.SWEEP
-    elif not location_configured():
-        header = f"{scale_tag}  ·  no location"
-        color = theme.TAG_ALT_DESCEND
-    else:
-        header = f"{scale_tag}  ·  no aircraft"
-        color = theme.HINT
+        return
 
-    draw.draw_center_line(surface, header, y, font, color)
+    font = draw.load_font(theme.FONT_DETAIL)
+    y = theme.CENTER_Y - int(theme.VISIBLE_RADIUS * 0.62)
 
     if not location_configured():
         lines = [
@@ -199,7 +262,7 @@ def _draw_status(surface, flights):
             "in /etc/flightscnr.env",
         ]
         color = theme.TAG_ALT_DESCEND
-    elif not visible:
+    else:
         try:
             min_line = f"Min height: {settings.min_height_ft()} ft"
         except ImportError:
@@ -208,22 +271,21 @@ def _draw_status(surface, flights):
         if min_line:
             lines.insert(1, min_line)
         color = theme.HINT
-    else:
-        return
 
-    y = theme.CENTER_Y - theme.s(30)
     for line in lines:
         y = draw.draw_center_line(surface, line, y, font, color)
 
 
 def draw_radar(surface, flights, full_redraw=True):
+    alert_prefs.reload()
     draw.fill_background(surface)
     map_bg.request_background()
     map_bg.draw_background(surface)
     _draw_grid(surface)
 
     _draw_flights(surface, flights)
-    draw.draw_sweep_line(surface, _sweep_angle, theme.SWEEP, width=max(2, theme.s(2)))
+    if settings.show_sweep_line():
+        draw.draw_sweep_line(surface, _sweep_angle, theme.SWEEP, width=max(2, theme.s(2)))
     _draw_status(surface, flights)
     _draw_map_attribution(surface)
 
@@ -238,20 +300,6 @@ def _draw_map_attribution(surface):
     half = draw.circle_half_width_at_row(y, rendered.get_height())
     x = theme.CENTER_X + half - rendered.get_width() - theme.s(4)
     surface.blit(rendered, (x, y))
-
-
-def range_header_rect() -> pygame.Rect:
-    """Tap target for the range readout at the top of the round dial."""
-    font = draw.load_font(theme.FONT_DETAIL)
-    row_h = font.get_height()
-    y = theme.CENTER_Y - int(theme.VISIBLE_RADIUS * 0.62)
-    half_w = draw.circle_half_width_at_row(y, row_h * 2 + theme.s(8))
-    height = row_h * 2 + theme.s(12)
-    return pygame.Rect(theme.CENTER_X - half_w, y, half_w * 2, height)
-
-
-def tap_on_range_header(x: int, y: int) -> bool:
-    return range_header_rect().collidepoint(x, y)
 
 
 def _flight_screen_xy(flight) -> tuple[int, int] | None:
@@ -292,6 +340,8 @@ def pick_flight_at(flights, tap_x, tap_y, alt_x=None, alt_y=None):
     best = None
     best_d2 = None
     for flight in _visible_flights(flights):
+        if not aircraft_alert.is_shown_on_radar(flight):
+            continue
         pos = _flight_screen_xy(flight)
         if not pos:
             continue

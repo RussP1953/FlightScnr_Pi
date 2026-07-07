@@ -64,7 +64,7 @@ def validate_config():
     # --- Summary ---
     if errors:
         logger.warning(f"  Incomplete config: {', '.join(errors)}")
-        logger.warning("  Set them in /etc/flightscnr.env and restart")
+        logger.warning("  Set them in config.h, the web portal, or /etc/flightscnr.env and restart")
     else:
         logger.info("  All prerequisites OK")
 
