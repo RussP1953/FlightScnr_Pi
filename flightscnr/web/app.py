@@ -213,6 +213,14 @@ def location_set():
         return jsonify({"message": str(exc)}), 400
     try:
         set_location_home(lat, lon)
+        # Force one immediate weather fetch after location change so
+        # clock/forecast updates without waiting for the normal cache TTL.
+        try:
+            from display.round_touch import weather_data
+
+            weather_data.refresh_for_location_change()
+        except Exception:
+            print("Weather refresh after location save failed")
         return jsonify({
             "message": f"Radar center saved: {format_location_home()}",
             "location": format_location_home(),
@@ -424,6 +432,130 @@ def weather_save():
             "label": weather_prefs.portal_label(),
             "symbol": weather_prefs.unit_symbol(),
             "message": f"Weather units set to {weather_prefs.portal_label()}.",
+        }
+    )
+
+
+@app.get("/display/json")
+def display_json():
+    from display.round_touch import settings
+
+    return jsonify(
+        {
+            "brightness_percent": settings.brightness_percent(),
+            "flight_detail_timeout_s": settings.flight_detail_timeout_s(),
+            "clock_timeout_s": settings.clock_timeout_s(),
+            "auto_idle_clock": settings.auto_idle_clock_enabled(),
+        }
+    )
+
+
+@app.post("/display")
+def display_save():
+    from display.round_touch import settings
+
+    data = request.get_json(silent=True) or {}
+    if "brightness_percent" in data:
+        try:
+            settings.set_brightness_percent(int(data.get("brightness_percent")))
+        except (TypeError, ValueError):
+            return jsonify({"message": "brightness_percent must be a number"}), 400
+    if "auto_idle_clock" in data:
+        settings.set_auto_idle_clock_enabled(bool(data.get("auto_idle_clock")))
+    if "flight_detail_timeout_s" in data:
+        settings.set_flight_detail_timeout_s(data.get("flight_detail_timeout_s"))
+    if "clock_timeout_s" in data:
+        settings.set_clock_timeout_s(data.get("clock_timeout_s"))
+    return jsonify(
+        {
+            "ok": True,
+            "brightness_percent": settings.brightness_percent(),
+            "flight_detail_timeout_s": settings.flight_detail_timeout_s(),
+            "clock_timeout_s": settings.clock_timeout_s(),
+            "auto_idle_clock": settings.auto_idle_clock_enabled(),
+            "message": "Display settings saved.",
+        }
+    )
+
+
+@app.get("/radar/json")
+def radar_json():
+    from display.round_touch import color_presets, scale, settings
+
+    options = [
+        {"index": i, "label": scale.format_band_tag(i, settings.distance_units())}
+        for i in range(len(scale.SCALE_BANDS))
+    ]
+    return jsonify(
+        {
+            "distance_units": settings.distance_units(),
+            "scale_index": settings.scale_index(),
+            "scale_options": options,
+            "min_height_ft": settings.min_height_ft(),
+            "theme_index": settings.theme_index(),
+            "theme_options": list(color_presets.THEME_NAMES),
+            "show_compass_rose": settings.show_compass_rose(),
+            "show_sweep_line": settings.show_sweep_line(),
+        }
+    )
+
+
+@app.post("/radar")
+def radar_save():
+    from display.round_touch import map_bg, scale, settings
+
+    data = request.get_json(silent=True) or {}
+    if "distance_units" in data:
+        settings.set_distance_units(data.get("distance_units"))
+    if "scale_index" in data:
+        settings.set_scale_index(int(data.get("scale_index")))
+        scale.select(settings.scale_index())
+        map_bg.request_background()
+    if "min_height_ft" in data:
+        settings.set_min_height_ft(int(data.get("min_height_ft")))
+    if "theme_index" in data:
+        settings.set_theme_index(int(data.get("theme_index")))
+    if "show_compass_rose" in data:
+        settings.set_show_compass_rose(bool(data.get("show_compass_rose")))
+    if "show_sweep_line" in data:
+        settings.set_show_sweep_line(bool(data.get("show_sweep_line")))
+    return jsonify({"ok": True, "message": "Radar settings saved."})
+
+
+@app.get("/off-hours/json")
+def off_hours_json():
+    from display.round_touch import off_hours
+
+    return jsonify(off_hours.prefs())
+
+
+@app.post("/off-hours")
+def off_hours_save():
+    from display.round_touch import off_hours
+
+    data = request.get_json(silent=True) or {}
+    updated = off_hours.update_prefs(
+        enabled=data.get("enabled"),
+        start=data.get("start"),
+        end=data.get("end"),
+        mode=data.get("mode"),
+        dim_percent=data.get("dim_percent"),
+    )
+    # Apply brightness immediately from the web save path so changes take
+    # effect even before the display loop's next pass.
+    try:
+        from display.round_touch import backlight, settings
+
+        backlight.apply_percent(
+            off_hours.effective_brightness_percent(settings.brightness_percent())
+        )
+    except Exception:
+        pass
+    return jsonify(
+        {
+            "ok": True,
+            **updated,
+            "message": "Off-hours schedule saved.",
         }
     )
 

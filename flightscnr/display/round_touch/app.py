@@ -55,6 +55,7 @@ SCREEN_TRACKED = "tracked"
 SECONDARY_TIMEOUT_S = 45
 BOOT_SPLASH_S = 3
 AUTO_IDLE_MIN_RADAR_S = 5
+OFF_HOURS_TOUCH_WAKE_S = 300
 
 
 class RoundTouchDisplay:
@@ -116,6 +117,8 @@ class RoundTouchDisplay:
         self._route_enrichment: dict[str, dict] = {}
         self._route_enrich_inflight: set[str] = set()
         self._route_enrich_redraw = False
+        self._last_settings_reload = 0.0
+        self._off_hours_wake_until = 0.0
 
         radar._init_sweep()
         map_bg.request_background()
@@ -290,7 +293,33 @@ class RoundTouchDisplay:
         from display.round_touch import backlight, off_hours
 
         pct = off_hours.effective_brightness_percent(settings.brightness_percent())
+        if pct == 0 and time.time() < self._off_hours_wake_until:
+            pct = settings.brightness_percent()
         backlight.apply_percent(pct)
+
+    def _wake_for_off_hours_touch(self):
+        from display.round_touch import off_hours
+
+        if not off_hours.in_off_hours():
+            return
+        if off_hours.effective_brightness_percent(settings.brightness_percent()) != 0:
+            return
+        self._off_hours_wake_until = time.time() + OFF_HOURS_TOUCH_WAKE_S
+        # Only force-open clock for explicit off-hours clock mode.
+        # In "turn off display" mode we should keep current screen so radar taps
+        # (e.g. selecting aircraft) work normally after wake.
+        if off_hours.force_clock_enabled() and self.screen == SCREEN_RADAR:
+            self._open_screen(SCREEN_CLOCK)
+        self._safe_draw()
+
+    def _note_off_hours_override(self):
+        from display.round_touch import off_hours
+
+        if not off_hours.in_off_hours():
+            return
+        # Temporary wake override is only for "turn off display" mode.
+        if off_hours.effective_brightness_percent(settings.brightness_percent()) == 0:
+            self._off_hours_wake_until = time.time() + OFF_HOURS_TOUCH_WAKE_S
 
     def _apply_scale_step(self, delta: int):
         """delta: -1 closer range, +1 wider range."""
@@ -582,11 +611,31 @@ class RoundTouchDisplay:
     def _tick_timeout(self):
         if time.time() < self._boot_until:
             return
-        if self.screen in (SCREEN_RADAR, SCREEN_CLOCK, SCREEN_CLOCK_SETTINGS, SCREEN_FORECAST):
+        from display.round_touch import off_hours
+
+        # In off-hours clock mode, keep clock/forecast screens stable instead of
+        # timing out back to radar (prevents clock<->radar flicker).
+        if (
+            self.screen in (SCREEN_CLOCK, SCREEN_CLOCK_SETTINGS, SCREEN_FORECAST)
+            and off_hours.in_off_hours()
+            and off_hours.force_clock_enabled()
+        ):
+            return
+        if self.screen == SCREEN_RADAR:
             return
         if self.screen == SCREEN_TRACKED and tracked.is_pinned():
             return
-        if time.time() - self._secondary_activity >= SECONDARY_TIMEOUT_S:
+
+        timeout_s = SECONDARY_TIMEOUT_S
+        if self.screen == SCREEN_FLIGHT:
+            timeout_s = settings.flight_detail_timeout_s()
+        elif self.screen in (SCREEN_CLOCK, SCREEN_CLOCK_SETTINGS, SCREEN_FORECAST):
+            timeout_s = settings.clock_timeout_s()
+
+        if timeout_s <= 0:
+            return
+
+        if time.time() - self._secondary_activity >= timeout_s:
             self._return_to_radar()
             self._safe_draw()
 
@@ -620,6 +669,17 @@ class RoundTouchDisplay:
             if radar.visible_in_range_count(self.flights) > 0:
                 self._return_to_radar()
                 self._safe_draw()
+
+    def _tick_off_hours_clock(self):
+        from display.round_touch import off_hours
+
+        if time.time() < self._boot_until:
+            return
+        if not off_hours.in_off_hours() or not off_hours.force_clock_enabled():
+            return
+        if self.screen not in (SCREEN_CLOCK, SCREEN_CLOCK_SETTINGS, SCREEN_FORECAST):
+            self._open_screen(SCREEN_CLOCK)
+            self._safe_draw()
 
     def _maybe_reload_location(self):
         try:
@@ -683,6 +743,9 @@ class RoundTouchDisplay:
                         logger.debug("Display lost focus (continuing)")
                         continue
                     if gesture_handler.RadarGestureHandler.is_touch_event(event):
+                        self._note_off_hours_override()
+                        if gesture_handler.RadarGestureHandler.is_pointer_down(event):
+                            self._wake_for_off_hours_touch()
                         touch_debug.log_event(event)
                         if (
                             self.screen == SCREEN_RADAR
@@ -723,6 +786,13 @@ class RoundTouchDisplay:
                 if now - last_location_check >= 2.0:
                     self._maybe_reload_location()
                     last_location_check = now
+
+                if now - self._last_settings_reload >= 0.5:
+                    if settings.reload():
+                        self._apply_brightness()
+                        if self.screen in (SCREEN_CLOCK, SCREEN_CLOCK_SETTINGS, SCREEN_FORECAST, SCREEN_SETTINGS):
+                            self._safe_draw()
+                    self._last_settings_reload = now
 
                 if self._route_enrich_redraw and self.screen == SCREEN_FLIGHT:
                     self._route_enrich_redraw = False
@@ -772,6 +842,7 @@ class RoundTouchDisplay:
 
                 self._tick_timeout()
                 self._tick_auto_idle_clock()
+                self._tick_off_hours_clock()
                 self._apply_brightness()
                 time.sleep(0.01)
 

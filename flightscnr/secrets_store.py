@@ -32,6 +32,20 @@ MANAGED_KEYS = (
     "HOME_LON",
 )
 
+TOGGLE_KEYS = (
+    "USE_FR24_API",
+    "USE_TOMORROW_WEATHER",
+    "USE_AIRLABS_API",
+)
+
+
+def _to_bool(value, default=True) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in ("1", "true", "yes", "on", "t")
+
 _DEFINE_RE = re.compile(
     r'^\s*#\s*define\s+([A-Z_][A-Z0-9_]*)\s+("([^"]*)"|\'([^\']*)\'|(\S+))',
     re.IGNORECASE,
@@ -96,6 +110,38 @@ def load_secrets_json() -> dict[str, str]:
     return out
 
 
+def load_toggles() -> dict[str, bool]:
+    defaults = {
+        "USE_FR24_API": True,
+        "USE_TOMORROW_WEATHER": True,
+        "USE_AIRLABS_API": True,
+    }
+    try:
+        with open(SECRETS_JSON_PATH, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, json.JSONDecodeError, TypeError):
+        return defaults
+    if not isinstance(data, dict):
+        return defaults
+    out = dict(defaults)
+    for key in TOGGLE_KEYS:
+        out[key] = _to_bool(data.get(key), defaults[key])
+    return out
+
+
+def api_enabled(key_name: str) -> bool:
+    toggles = load_toggles()
+    mapping = {
+        "FR24_API_KEY": "USE_FR24_API",
+        "TOMORROW_API_KEY": "USE_TOMORROW_WEATHER",
+        "AIRLABS_API_KEY": "USE_AIRLABS_API",
+    }
+    toggle_key = mapping.get(key_name)
+    if not toggle_key:
+        return True
+    return bool(toggles.get(toggle_key, True))
+
+
 def _merged_secrets() -> dict[str, str]:
     merged = load_config_h()
     merged.update(load_secrets_json())
@@ -122,6 +168,7 @@ def secrets_status() -> dict:
     """Status for web portal (masked values, source hints)."""
     bootstrap_secrets()
     merged = _merged_secrets()
+    toggles = load_toggles()
     status = {}
     for key in MANAGED_KEYS:
         env_val = os.environ.get(key, "").strip()
@@ -138,7 +185,9 @@ def secrets_status() -> dict:
             "configured": bool(active),
             "masked": mask_secret(active),
             "source": source,
+            "enabled": api_enabled(key),
         }
+    status["toggles"] = toggles
     status["config_h_path"] = CONFIG_H_PATH
     status["secrets_json_path"] = SECRETS_JSON_PATH
     return status
@@ -168,6 +217,15 @@ def save_secrets_from_portal(payload: dict) -> dict[str, str]:
         elif clear:
             updated.pop(env_key, None)
             os.environ.pop(env_key, None)
+
+    toggle_map = {
+        "use_fr24_api": "USE_FR24_API",
+        "use_tomorrow_weather": "USE_TOMORROW_WEATHER",
+        "use_airlabs_api": "USE_AIRLABS_API",
+    }
+    for form_key, key in toggle_map.items():
+        if form_key in payload:
+            updated[key] = _to_bool(payload.get(form_key), True)
 
     os.makedirs(DATA_DIR, exist_ok=True)
     tmp = SECRETS_JSON_PATH + ".tmp"

@@ -28,6 +28,15 @@ except (ModuleNotFoundError, NameError, ImportError):
 logger = logging.getLogger(__name__)
 
 
+def _weather_enabled() -> bool:
+    try:
+        from secrets_store import api_enabled
+
+        return api_enabled("TOMORROW_API_KEY")
+    except Exception:
+        return True
+
+
 def _temperature_units() -> str:
     """Units requested from Tomorrow.io — always metric; convert on display."""
     return "metric"
@@ -237,6 +246,9 @@ def grab_temperature_and_humidity():
     """
     global _cached_temp, _cached_temp_ts, _cached_temp_units
 
+    if not _weather_enabled():
+        logger.info("Tomorrow.io weather disabled in web portal settings")
+        return None, None
     if not TOMORROW_API_KEY:
         logger.warning("TOMORROW_API_KEY not set — skipping temperature fetch")
         return None, None
@@ -378,6 +390,9 @@ def grab_forecast(tag="unknown"):
     """
     global _cached_forecast, _cached_forecast_ts, _cached_forecast_units
 
+    if not _weather_enabled():
+        logger.info("Tomorrow.io weather disabled in web portal settings")
+        return []
     if not TOMORROW_API_KEY:
         logger.warning("TOMORROW_API_KEY not set — skipping forecast fetch")
         return []

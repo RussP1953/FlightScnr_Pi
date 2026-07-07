@@ -23,7 +23,7 @@ def _backlight_paths() -> list[str]:
 
 def apply_percent(percent: int) -> bool:
     global _last_pct
-    pct = max(10, min(100, int(percent)))
+    pct = max(0, min(100, int(percent)))
     if _last_pct == pct:
         return True
     ok = False

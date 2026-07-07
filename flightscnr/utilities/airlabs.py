@@ -58,6 +58,14 @@ def get_flight_schedule(callsign):
         }
         or None on error / not found.
     """
+    try:
+        from secrets_store import api_enabled
+        if not api_enabled("AIRLABS_API_KEY"):
+            logger.info("AirLabs API disabled in web portal settings")
+            return None
+    except Exception:
+        pass
+
     if not AIRLABS_API_KEY:
         logger.warning("AirLabs: No API key configured")
         return None

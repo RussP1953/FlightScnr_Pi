@@ -9,8 +9,9 @@ logger = logging.getLogger("flightscnr.display")
 
 DATA_DIR = os.environ.get("FLIGHTSCNR_DATA_DIR", "/var/lib/flightscnr")
 SETTINGS_PATH = os.path.join(DATA_DIR, "round_touch_settings.json")
+_settings_mtime: float | None = None
 
-MIN_HEIGHT_OPTIONS = (500, 1000, 1500)
+MIN_HEIGHT_OPTIONS = (0, 500, 1000, 1500)
 
 _defaults = {
     "brightness_percent": 100,
@@ -23,6 +24,8 @@ _defaults = {
     "auto_timezone": True,
     "min_height_ft": 1000,
     "auto_idle_clock": True,
+    "flight_detail_timeout_s": 20,
+    "clock_timeout_s": 10,
 }
 
 
@@ -58,12 +61,17 @@ def _seed_from_env(state: dict) -> None:
 
 
 def _save(data):
+    global _settings_mtime
     try:
         os.makedirs(DATA_DIR, exist_ok=True)
         tmp_path = SETTINGS_PATH + ".tmp"
         with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
         os.replace(tmp_path, SETTINGS_PATH)
+        try:
+            _settings_mtime = os.path.getmtime(SETTINGS_PATH)
+        except OSError:
+            _settings_mtime = None
     except OSError as exc:
         logger.warning("Could not save display settings to %s: %s", SETTINGS_PATH, exc)
 
@@ -117,6 +125,24 @@ def _load():
 _state = _load()
 
 
+def reload() -> bool:
+    """Reload settings from disk if file changed externally."""
+    global _state, _settings_mtime
+    try:
+        current = os.path.getmtime(SETTINGS_PATH)
+    except OSError:
+        current = None
+    if current == _settings_mtime:
+        return False
+    _state = _load()
+    _settings_mtime = current
+    _sync_config_min_height()
+    # Re-apply runtime palette when theme changes are saved externally
+    # (e.g. from the web portal process).
+    apply_theme_colors()
+    return True
+
+
 def _sync_config_min_height():
     try:
         import config
@@ -136,6 +162,12 @@ def cycle_min_height():
     current = min_height_ft()
     idx = opts.index(current) if current in opts else 0
     _state["min_height_ft"] = opts[(idx + 1) % len(opts)]
+    _sync_config_min_height()
+    _save(_state)
+
+
+def set_min_height_ft(value: int):
+    _state["min_height_ft"] = _snap_min_height(value)
     _sync_config_min_height()
     _save(_state)
 
@@ -170,12 +202,25 @@ def toggle_distance_units():
     _save(_state)
 
 
+def set_distance_units(units: str):
+    raw = str(units or "").strip().lower()
+    if raw not in ("km", "mi", "nm"):
+        raw = "km"
+    _state["distance_units"] = raw
+    _save(_state)
+
+
 def show_sweep_line() -> bool:
     return bool(_state.get("show_sweep", True))
 
 
 def toggle_sweep_line():
     _state["show_sweep"] = not show_sweep_line()
+    _save(_state)
+
+
+def set_show_sweep_line(enabled: bool):
+    _state["show_sweep"] = bool(enabled)
     _save(_state)
 
 
@@ -194,6 +239,11 @@ def show_compass_rose():
 
 def toggle_compass_rose():
     _state["show_compass_rose"] = not _state["show_compass_rose"]
+    _save(_state)
+
+
+def set_show_compass_rose(enabled: bool):
+    _state["show_compass_rose"] = bool(enabled)
     _save(_state)
 
 
@@ -255,6 +305,53 @@ def auto_idle_clock_enabled() -> bool:
 
 def toggle_auto_idle_clock():
     _state["auto_idle_clock"] = not auto_idle_clock_enabled()
+    _save(_state)
+
+
+def set_auto_idle_clock_enabled(enabled: bool):
+    _state["auto_idle_clock"] = bool(enabled)
+    _save(_state)
+
+
+def flight_detail_timeout_s() -> int:
+    try:
+        val = int(_state.get("flight_detail_timeout_s", 20))
+    except (TypeError, ValueError):
+        val = 20
+    if val not in (0, 10, 20, 30):
+        val = 20
+    return val
+
+
+def set_flight_detail_timeout_s(value: int):
+    try:
+        val = int(value)
+    except (TypeError, ValueError):
+        val = 20
+    if val not in (0, 10, 20, 30):
+        val = 20
+    _state["flight_detail_timeout_s"] = val
+    _save(_state)
+
+
+def clock_timeout_s() -> int:
+    try:
+        val = int(_state.get("clock_timeout_s", 10))
+    except (TypeError, ValueError):
+        val = 10
+    if val not in (0, 5, 10, 15):
+        val = 10
+    return val
+
+
+def set_clock_timeout_s(value: int):
+    try:
+        val = int(value)
+    except (TypeError, ValueError):
+        val = 10
+    if val not in (0, 5, 10, 15):
+        val = 10
+    _state["clock_timeout_s"] = val
     _save(_state)
 
 

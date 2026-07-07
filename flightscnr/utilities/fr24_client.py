@@ -49,6 +49,14 @@ def _ensure_env_credentials() -> None:
         return  # already set
 
     try:
+        from secrets_store import api_enabled
+        if not api_enabled("FR24_API_KEY"):
+            logger.info("FR24 API disabled in web portal settings")
+            return
+    except Exception:
+        pass
+
+    try:
         from config import FR24_API_KEY
     except (ImportError, AttributeError):
         FR24_API_KEY = os.environ.get("FR24_API_KEY", "")
