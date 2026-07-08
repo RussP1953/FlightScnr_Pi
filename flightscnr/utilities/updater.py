@@ -40,7 +40,14 @@ def _run_git(args: list[str]) -> str | None:
         return None
     try:
         result = subprocess.run(
-            ["git", "-C", root, *args],
+            [
+                "git",
+                "-c",
+                f"safe.directory={root}",
+                "-C",
+                root,
+                *args,
+            ],
             capture_output=True,
             text=True,
             timeout=10,
