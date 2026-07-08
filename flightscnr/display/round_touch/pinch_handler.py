@@ -4,13 +4,27 @@ FROZEN — see gesture_handler.py and tests/test_gesture_handler.py.
 Pinch uses FINGER events; never arm from a single-finger mouse drag.
 """
 
+import logging
 import math
+import os
+import time
 
 import pygame
+
+logger = logging.getLogger("flightscnr.display")
 
 _SPAN_STEP_RATIO = 0.15
 _FINGER_MOVE_PX = 6
 _GHOST_SPAN_SLACK_PX = 18
+# Contacts that stop reporting but never send FINGERUP are stuck driver ids.
+_STALE_FINGER_S = 2.5
+# Real pinch fingers land within a moment of each other; a "pair" made of a
+# fresh finger and an old contact must never arm zoom.
+_PAIR_WINDOW_S = 2.0
+
+
+def _debug_enabled() -> bool:
+    return os.environ.get("TOUCH_DEBUG", "").strip().lower() in ("1", "true", "yes")
 
 
 def _min_span_px() -> int:
@@ -51,6 +65,8 @@ class PinchZoom:
         self._fingers: dict[int, tuple[float, float]] = {}
         self._finger_starts: dict[int, tuple[float, float]] = {}
         self._moved: set[int] = set()
+        self._down_at: dict[int, float] = {}
+        self._seen_at: dict[int, float] = {}
         self._baseline_span: float | None = None
         self._suppress_tap = False
         self._pinch_session = False
@@ -60,6 +76,19 @@ class PinchZoom:
 
     def finger_count(self) -> int:
         return len(self._fingers)
+
+    def second_finger_span_ok(self, event: pygame.event.Event) -> bool:
+        """True when a new finger lands far enough from primary for a real pinch."""
+        if event.type != pygame.FINGERDOWN or len(self._fingers) != 1:
+            return len(self._fingers) >= 2
+        if self._primary_id is None:
+            return False
+        primary = self._fingers.get(self._primary_id)
+        if primary is None:
+            return False
+        pos = _logical_pos(event)
+        span = math.hypot(pos[0] - primary[0], pos[1] - primary[1])
+        return span >= _min_span_px()
 
     def is_pinching(self) -> bool:
         """True only for a confirmed two-finger pinch (never a swipe ghost)."""
@@ -104,8 +133,26 @@ class PinchZoom:
         span = _finger_span(self._fingers) or 0.0
         return abs(span - primary_drift) < _GHOST_SPAN_SLACK_PX
 
+    def _pair_is_fresh(self) -> bool:
+        """Both fingers must have gone down within the pair window (no stuck ids)."""
+        ids = list(self._fingers)[:2]
+        if len(ids) < 2:
+            return False
+        t0 = self._down_at.get(ids[0])
+        t1 = self._down_at.get(ids[1])
+        if t0 is None or t1 is None:
+            return False
+        return abs(t0 - t1) <= _PAIR_WINDOW_S
+
     def _pinch_ready(self) -> bool:
         if self._swipe_blocked or len(self._fingers) < 2 or self._is_swipe_ghost():
+            return False
+        if not self._pair_is_fresh():
+            if _debug_enabled():
+                logger.info(
+                    "pinch: pair not fresh, refusing to arm (ids=%s)",
+                    sorted(self._fingers),
+                )
             return False
         if len(self._moved) >= 2:
             return True
@@ -123,16 +170,48 @@ class PinchZoom:
             self._pinch_session = True
             self._pinch_confirmed = True
             self._baseline_span = span
+            if _debug_enabled():
+                logger.info(
+                    "pinch: session ARMED span=%.1f ids=%s",
+                    span,
+                    sorted(self._fingers),
+                )
 
     def _reset(self) -> None:
         self._fingers.clear()
         self._finger_starts.clear()
         self._moved.clear()
+        self._down_at.clear()
+        self._seen_at.clear()
         self._baseline_span = None
         self._pinch_session = False
         self._pinch_confirmed = False
         self._swipe_blocked = False
         self._primary_id = None
+
+    def _forget(self, fid: int) -> None:
+        self._fingers.pop(fid, None)
+        self._finger_starts.pop(fid, None)
+        self._moved.discard(fid)
+        self._down_at.pop(fid, None)
+        self._seen_at.pop(fid, None)
+        if fid == self._primary_id:
+            self._primary_id = next(iter(self._fingers), None)
+
+    def prune_stale(self, now: float | None = None) -> None:
+        """Drop contacts that stopped reporting but never sent FINGERUP."""
+        if self._pinch_confirmed:
+            return
+        if now is None:
+            now = time.time()
+        for fid in [f for f, t in self._seen_at.items() if now - t > _STALE_FINGER_S]:
+            if _debug_enabled():
+                logger.info(
+                    "pinch: dropped stale finger id=%d age=%.1fs",
+                    fid,
+                    now - self._seen_at[fid],
+                )
+            self._forget(fid)
 
     def sync_pointer_down(self) -> None:
         """Mouse press — drop stale capacitive contacts from a prior gesture."""
@@ -147,9 +226,9 @@ class PinchZoom:
         sid = self._secondary_id()
         if sid is None:
             return
-        self._fingers.pop(sid, None)
-        self._finger_starts.pop(sid, None)
-        self._moved.discard(sid)
+        if _debug_enabled():
+            logger.info("pinch: dropped swipe-ghost finger id=%d", sid)
+        self._forget(sid)
 
     def handle_event(self, event: pygame.event.Event, *, allow_zoom: bool = True) -> int:
         """Return scale index delta: -1 zoom in, +1 zoom out, 0 none."""
@@ -157,11 +236,23 @@ class PinchZoom:
             return 0
 
         fid = int(event.finger_id)
+        now = time.time()
 
         if event.type == pygame.FINGERDOWN:
+            self.prune_stale(now)
             pos = _logical_pos(event)
             self._fingers[fid] = pos
             self._finger_starts[fid] = pos
+            self._down_at[fid] = now
+            self._seen_at[fid] = now
+            if _debug_enabled():
+                logger.info(
+                    "pinch: FINGERDOWN id=%d count=%d ids=%s allow_zoom=%s",
+                    fid,
+                    len(self._fingers),
+                    sorted(self._fingers),
+                    allow_zoom,
+                )
             if len(self._fingers) == 1:
                 self._primary_id = fid
                 self._swipe_blocked = False
@@ -171,6 +262,8 @@ class PinchZoom:
                 self._fingers = {k: self._fingers[k] for k in keep}
                 self._finger_starts = {k: self._finger_starts[k] for k in keep}
                 self._moved = {k for k in self._moved if k in keep}
+                self._down_at = {k: v for k, v in self._down_at.items() if k in keep}
+                self._seen_at = {k: v for k, v in self._seen_at.items() if k in keep}
                 self._primary_id = keep[0]
             elif len(self._fingers) >= 2 and allow_zoom and not self._swipe_blocked:
                 self._maybe_begin_pinch_session()
@@ -180,15 +273,16 @@ class PinchZoom:
             if fid not in self._fingers:
                 return 0
             self._fingers[fid] = _logical_pos(event)
+            self._seen_at[fid] = now
             self._note_motion(fid)
-            if not allow_zoom or self._swipe_blocked or len(self._fingers) < 2:
-                return 0
-            if self._is_swipe_ghost():
+            if len(self._fingers) >= 2 and self._is_swipe_ghost():
                 self._drop_ghost_finger()
                 self._swipe_blocked = True
                 self._pinch_session = False
                 self._pinch_confirmed = False
                 self._baseline_span = None
+                return 0
+            if not allow_zoom or self._swipe_blocked or len(self._fingers) < 2:
                 return 0
             if not self._pinch_session:
                 self._maybe_begin_pinch_session()
@@ -198,17 +292,21 @@ class PinchZoom:
             return self._scale_delta_from_span()
 
         if event.type == pygame.FINGERUP:
-            self._fingers.pop(fid, None)
-            self._finger_starts.pop(fid, None)
-            self._moved.discard(fid)
-            if fid == self._primary_id:
-                self._primary_id = next(iter(self._fingers), None)
+            was_confirmed = self._pinch_confirmed
+            self._forget(fid)
+            if _debug_enabled():
+                logger.info(
+                    "pinch: FINGERUP id=%d count=%d ids=%s",
+                    fid,
+                    len(self._fingers),
+                    sorted(self._fingers),
+                )
             if not self._fingers:
-                if self._pinch_confirmed:
+                if was_confirmed:
                     self._suppress_tap = True
                 self._reset()
             elif len(self._fingers) < 2:
-                if self._pinch_confirmed:
+                if was_confirmed:
                     self._suppress_tap = True
                 self._pinch_session = False
                 self._pinch_confirmed = False

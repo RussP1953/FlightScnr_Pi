@@ -9,6 +9,7 @@ import importlib
 import importlib.util
 import os
 import sys
+import time
 import unittest
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -240,6 +241,134 @@ class TestRadarGestureHandler(unittest.TestCase):
         self.assertTrue(RadarGestureHandler.is_pointer_up(_mouse_up()))
         self.assertTrue(RadarGestureHandler.is_finger_event(_finger_event(pygame.FINGERDOWN)))
         self.assertTrue(RadarGestureHandler.is_touch_event(_mouse_motion(1, 2)))
+
+
+class TestFingerEventMode(unittest.TestCase):
+    def test_finger_swipe_with_mouse_release_fallback(self):
+        touch = TouchInput()
+        surface = _surface()
+        with _coord_patches(surface), patch.object(input_handler, "_USE_FINGER_EVENTS", True):
+            touch.handle_event(_finger_event(pygame.FINGERDOWN, fid=3, x=100 / 720, y=100 / 720))
+            touch.handle_event(
+                _finger_event(pygame.FINGERMOTION, fid=3, x=200 / 720, y=100 / 720)
+            )
+            touch.handle_event(_mouse_up(200, 100))
+            gesture = touch.consume_gesture()
+        self.assertEqual(gesture[0], "swipe")
+        self.assertEqual(gesture[1], SWIPE_RIGHT)
+
+    def test_finger_mode_pinch_after_second_finger(self):
+        handler = RadarGestureHandler(TouchInput(), PinchZoom())
+        surface = _surface()
+        with _coord_patches(surface), patch.object(input_handler, "_USE_FINGER_EVENTS", True):
+            handler.on_pointer_down()
+            handler.handle_input_event(
+                _finger_event(pygame.FINGERDOWN, fid=1, x=0.35, y=0.5)
+            )
+            handler.handle_finger_event(
+                _finger_event(pygame.FINGERDOWN, fid=1, x=0.35, y=0.5)
+            )
+            handler.handle_input_event(
+                _finger_event(pygame.FINGERDOWN, fid=2, x=0.55, y=0.5)
+            )
+            handler.handle_finger_event(
+                _finger_event(pygame.FINGERDOWN, fid=2, x=0.55, y=0.5)
+            )
+            deltas = []
+            for spread in (0.55, 0.62, 0.70, 0.78):
+                e1 = _finger_event(pygame.FINGERMOTION, fid=1, x=0.35, y=0.5)
+                e2 = _finger_event(pygame.FINGERMOTION, fid=2, x=spread, y=0.5)
+                handler.handle_input_event(e1)
+                deltas.append(handler.handle_finger_event(e1))
+                handler.handle_input_event(e2)
+                deltas.append(handler.handle_finger_event(e2))
+        self.assertTrue(any(d != 0 for d in deltas))
+
+    def test_finger_mode_stale_phantom_never_zooms(self):
+        """A stuck driver id from minutes ago must not pair with a real swipe."""
+        handler = RadarGestureHandler(TouchInput(), PinchZoom())
+        surface = _surface()
+        with _coord_patches(surface), patch.object(input_handler, "_USE_FINGER_EVENTS", True):
+            # Phantom contact went down long ago and never sent FINGERUP.
+            handler.handle_finger_event(
+                _finger_event(pygame.FINGERDOWN, fid=69, x=0.1, y=0.9)
+            )
+            pinch = handler.pinch
+            pinch._down_at[69] -= 300.0
+            pinch._seen_at[69] -= 300.0
+
+            # Real single-finger swipe arrives now.
+            handler.on_pointer_down()
+            handler.handle_input_event(
+                _finger_event(pygame.FINGERDOWN, fid=86, x=250 / 720, y=296 / 720)
+            )
+            handler.handle_finger_event(
+                _finger_event(pygame.FINGERDOWN, fid=86, x=250 / 720, y=296 / 720)
+            )
+            self.assertNotIn(69, pinch._fingers, "stale phantom should be pruned")
+            deltas = []
+            for step in range(1, 9):
+                x = (250 - step * 12) / 720
+                y = (296 - step * 14) / 720
+                e = _finger_event(pygame.FINGERMOTION, fid=86, x=x, y=y)
+                handler.handle_input_event(e)
+                deltas.append(handler.handle_finger_event(e))
+            up = _finger_event(pygame.FINGERUP, fid=86, x=154 / 720, y=184 / 720)
+            handler.handle_input_event(up)
+            handler.handle_finger_event(up)
+            gesture = handler.touch.consume_gesture()
+        self.assertTrue(all(d == 0 for d in deltas), f"phantom pinch zoomed: {deltas}")
+        self.assertIsNotNone(gesture)
+        self.assertEqual(gesture[0], "swipe")
+
+    def test_pair_window_blocks_old_plus_new_finger(self):
+        """Even unpruned, an old finger + new finger must not arm a pinch."""
+        pinch = PinchZoom()
+        surface = _surface()
+        with _coord_patches(surface):
+            pinch.handle_event(
+                _finger_event(pygame.FINGERDOWN, fid=1, x=0.3, y=0.5), allow_zoom=True
+            )
+            # Landed 10s before the second finger, but still reporting motion
+            # (so staleness pruning won't catch it) — pair window must.
+            pinch._down_at[1] -= 10.0
+            pinch._seen_at[1] = time.time()
+            pinch.handle_event(
+                _finger_event(pygame.FINGERDOWN, fid=2, x=0.6, y=0.5), allow_zoom=True
+            )
+            deltas = []
+            for spread in (0.62, 0.70, 0.80):
+                deltas.append(
+                    pinch.handle_event(
+                        _finger_event(pygame.FINGERMOTION, fid=2, x=spread, y=0.5),
+                        allow_zoom=True,
+                    )
+                )
+        self.assertTrue(all(d == 0 for d in deltas), f"stale pair zoomed: {deltas}")
+
+    def test_finger_mode_swipe_ignores_phantom_second_finger(self):
+        handler = RadarGestureHandler(TouchInput(), PinchZoom())
+        surface = _surface()
+        with _coord_patches(surface), patch.object(input_handler, "_USE_FINGER_EVENTS", True):
+            handler.on_pointer_down()
+            handler.handle_input_event(
+                _finger_event(pygame.FINGERDOWN, fid=1, x=200 / 720, y=300 / 720)
+            )
+            handler.handle_finger_event(
+                _finger_event(pygame.FINGERDOWN, fid=1, x=200 / 720, y=300 / 720)
+            )
+            handler.handle_finger_event(
+                _finger_event(pygame.FINGERDOWN, fid=9, x=200 / 720, y=300 / 720)
+            )
+            deltas = []
+            for x in range(200, 320, 15):
+                e1 = _finger_event(pygame.FINGERMOTION, fid=1, x=x / 720, y=300 / 720)
+                handler.handle_input_event(e1)
+                deltas.append(handler.handle_finger_event(e1))
+            handler.handle_input_event(_mouse_up(315, 300))
+            gesture = handler.touch.consume_gesture()
+        self.assertTrue(all(d == 0 for d in deltas))
+        self.assertEqual(gesture[0], "swipe")
 
 
 if __name__ == "__main__":

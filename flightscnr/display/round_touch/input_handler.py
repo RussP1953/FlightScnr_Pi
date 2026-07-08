@@ -143,9 +143,19 @@ class TouchInput:
     def handle_event(self, event: pygame.event.Event):
         if _USE_FINGER_EVENTS and event.type in (
             pygame.MOUSEBUTTONDOWN,
-            pygame.MOUSEBUTTONUP,
             pygame.MOUSEMOTION,
         ):
+            return
+
+        if _USE_FINGER_EVENTS and event.type == pygame.MOUSEBUTTONUP and event.button == 1:
+            # Waveshare DSI reports both FINGER* and MOUSE*; release is often mouse-only.
+            if self._start is not None:
+                sx, sy = self._start
+                if self._drag_end is not None:
+                    ex, ey = self._drag_end
+                else:
+                    ex, ey = _logical_pos(event.pos)
+                self._finish_pointer(sx, sy, ex, ey)
             return
 
         if event.type in (pygame.FINGERDOWN, pygame.FINGERUP) and not _USE_FINGER_EVENTS:

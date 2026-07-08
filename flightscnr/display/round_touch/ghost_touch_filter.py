@@ -38,10 +38,17 @@ def _logical_xy(event: pygame.event.Event) -> tuple[int, int]:
     return rotation.to_logical(x, y)
 
 
-def _jitter_radius() -> float:
-    from display.round_touch import theme
+def _use_finger_events() -> bool:
+    from display.round_touch import input_handler
 
-    return float(theme.s(36))
+    return input_handler.use_finger_events()
+
+
+def _stuck_radius() -> float:
+    """Movement below this while held is panel jitter, not a deliberate swipe."""
+    from display.round_touch import input_handler
+
+    return float(input_handler.gesture_threshold_px()) * 0.45
 
 
 def _in_hot_corner(pos: tuple[int, int]) -> bool:
@@ -70,6 +77,10 @@ class _FingerTrack:
     down_at: float = 0.0
     phantom: bool = False
     orphan: bool = False
+
+
+_MAX_TRACKED_FINGERS = 4
+_STALE_FINGER_S = 12.0
 
 
 class GhostTouchFilter:
@@ -125,6 +136,19 @@ class GhostTouchFilter:
     def _drop_phantom_finger(self, fid: int) -> None:
         self._fingers.pop(fid, None)
 
+    def _prune_stale_fingers(self, now: float) -> None:
+        stale = [
+            fid
+            for fid, track in self._fingers.items()
+            if (now - track.down_at) > _STALE_FINGER_S
+            and track.max_radius < _stuck_radius()
+        ]
+        for fid in stale:
+            self._fingers.pop(fid, None)
+        while len(self._fingers) > _MAX_TRACKED_FINGERS:
+            oldest = min(self._fingers, key=lambda k: self._fingers[k].down_at)
+            self._fingers.pop(oldest, None)
+
     def _mark_finger_phantom(
         self,
         fid: int,
@@ -149,13 +173,13 @@ class GhostTouchFilter:
             track.max_radius,
             math.hypot(pos[0] - track.anchor[0], pos[1] - track.anchor[1]),
         )
-        jitter = _jitter_radius()
+        stuck = _stuck_radius()
         held_ms = (now - track.down_at) * 1000.0
         hot = _in_hot_corner(track.anchor)
         stuck_ms = _HOT_STUCK_MS if hot else _STUCK_MS
-        if track.max_radius < jitter and held_ms >= stuck_ms:
+        if track.max_radius < stuck and held_ms >= stuck_ms:
             track.phantom = True
-        if hot and track.max_radius < jitter and track.path_length > jitter * 1.6:
+        if hot and track.max_radius < stuck and track.path_length > stuck * 1.6:
             track.phantom = True
 
     def _allow_finger(
@@ -169,6 +193,7 @@ class GhostTouchFilter:
         pos = _logical_xy(event)
 
         if event.type == pygame.FINGERDOWN:
+            self._prune_stale_fingers(now)
             if _in_hot_corner(pos):
                 self._log_phantom(pos, 0.0, "finger down in hot corner")
                 self._quiet_until = now + (_QUIET_MS / 1000.0)
@@ -190,7 +215,7 @@ class GhostTouchFilter:
             if track.phantom:
                 self._drop_phantom_finger(fid)
                 return False
-            if _in_hot_corner(track.anchor) and track.max_radius < _jitter_radius():
+            if _in_hot_corner(track.anchor) and track.max_radius < _stuck_radius():
                 self._mark_finger_phantom(
                     fid, cancel_gesture, is_dragging, "stuck hot-corner finger"
                 )
@@ -277,14 +302,14 @@ class GhostTouchFilter:
                     return False
                 return True
             self._update_pointer_motion(pos, now)
-            jitter = _jitter_radius()
+            stuck = _stuck_radius()
             held_ms = (now - self._down_at) * 1000.0 if self._down_at else 0.0
             anchor = self._anchor or pos
             hot = _in_hot_corner(anchor)
             stuck_ms = _HOT_STUCK_MS if hot else _STUCK_MS
-            if held_ms >= stuck_ms and self._max_radius < jitter:
+            if held_ms >= stuck_ms and self._max_radius < stuck:
                 self._mark_pointer_phantom(cancel_gesture, is_dragging, "stuck pointer")
-            if hot and self._max_radius < jitter and self._path_length > jitter * 1.6:
+            if hot and self._max_radius < stuck and self._path_length > stuck * 1.6:
                 self._mark_pointer_phantom(
                     cancel_gesture, is_dragging, "hot-corner wander"
                 )
@@ -296,10 +321,10 @@ class GhostTouchFilter:
             pos = _logical_xy(event)
             if self._tracking:
                 self._update_pointer_motion(pos, now)
-            jitter = _jitter_radius()
+            stuck = _stuck_radius()
             held_ms = (now - self._down_at) * 1000.0 if self._down_at else 0.0
             anchor = self._anchor or pos
-            micro = self._max_radius < jitter
+            micro = self._max_radius < stuck
             hot = _in_hot_corner(anchor)
             if self._phantom or (self._tracking and micro and (held_ms >= _STUCK_MS or hot)):
                 self._maybe_cancel(cancel_gesture, is_dragging)
@@ -325,5 +350,7 @@ class GhostTouchFilter:
         if _is_finger_event(event):
             return self._allow_finger(event, cancel_gesture, is_dragging, now)
         if _is_pointer_event(event):
+            if _use_finger_events():
+                return True
             return self._allow_pointer(event, cancel_gesture, is_dragging, now)
         return True

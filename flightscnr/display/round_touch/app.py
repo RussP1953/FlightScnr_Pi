@@ -779,18 +779,37 @@ class RoundTouchDisplay:
                             self._wake_for_off_hours_touch()
                         touch_debug.log_event(event)
                         if self.screen == SCREEN_RADAR:
-                            if gesture_handler.RadarGestureHandler.is_pointer_down(
-                                event
+                            ptr_down = (
+                                not input_handler.use_finger_events()
+                                and gesture_handler.RadarGestureHandler.is_pointer_down(event)
                             ) or (
                                 input_handler.use_finger_events()
                                 and event.type == pygame.FINGERDOWN
-                            ):
-                                self.gestures.on_pointer_down()
-                            elif gesture_handler.RadarGestureHandler.is_pointer_up(event) or (
+                            )
+                            ptr_up = (
+                                not input_handler.use_finger_events()
+                                and gesture_handler.RadarGestureHandler.is_pointer_up(event)
+                            ) or (
                                 input_handler.use_finger_events()
                                 and event.type == pygame.FINGERUP
                                 and int(event.finger_id)
                                 == self.gestures.touch.active_finger_id()
+                            )
+                            if ptr_down:
+                                if input_handler.use_finger_events():
+                                    # First finger only — later fingers are pinch partners.
+                                    if self.gestures.pinch.finger_count() == 0:
+                                        self.gestures.on_pointer_down()
+                                else:
+                                    self.gestures.on_pointer_down()
+                            elif ptr_up:
+                                self.gestures.on_pointer_up()
+                            elif (
+                                input_handler.use_finger_events()
+                                and event.type == pygame.MOUSEBUTTONUP
+                                and event.button == 1
+                                and not self.gestures.touch.is_dragging()
+                                and not self.gestures.pinch.is_pinching()
                             ):
                                 self.gestures.on_pointer_up()
                         self.gestures.handle_input_event(event)

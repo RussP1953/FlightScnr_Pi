@@ -23,10 +23,19 @@ Architecture:
 
 from __future__ import annotations
 
+import logging
+import os
+
 import pygame
 
 from display.round_touch.input_handler import TouchInput
 from display.round_touch.pinch_handler import PinchZoom
+
+logger = logging.getLogger("flightscnr.display")
+
+
+def _debug_enabled() -> bool:
+    return os.environ.get("TOUCH_DEBUG", "").strip().lower() in ("1", "true", "yes")
 
 # Bump when the frozen contract intentionally changes (see module docstring).
 GESTURE_LOGIC_VERSION = 1
@@ -58,15 +67,40 @@ class RadarGestureHandler:
 
     def handle_finger_event(self, event: pygame.event.Event) -> int:
         """Process a FINGER* event on radar. Returns scale index delta."""
+        if event.type == pygame.FINGERDOWN:
+            # Stuck driver ids never send FINGERUP; drop them before they can
+            # pair with a real finger and fake a pinch.
+            self._pinch.prune_stale()
         if self._pinch.is_pinching():
-            allow_zoom = True
+            allow_zoom, why = True, "pinch active"
         elif self._touch.is_dragging():
-            # Single-finger swipe: ignore phantom 2nd contacts (stuck driver ids).
-            allow_zoom = False
+            if self._touch.blocks_pinch():
+                allow_zoom, why = False, "swipe committed"
+            elif (
+                event.type == pygame.FINGERDOWN
+                and self._pinch.finger_count() >= 1
+                and self._pinch.second_finger_span_ok(event)
+            ):
+                self._touch.cancel_gesture()
+                allow_zoom, why = True, "second finger joins"
+            else:
+                allow_zoom, why = False, "single-finger drag"
         else:
             allow_zoom = self._pinch.finger_count() >= 2
+            why = "idle, two fingers" if allow_zoom else "idle"
+        if _debug_enabled() and event.type == pygame.FINGERDOWN:
+            logger.info(
+                "gesture: FINGERDOWN id=%d allow_zoom=%s (%s) pinch_fingers=%d dragging=%s",
+                int(event.finger_id),
+                allow_zoom,
+                why,
+                self._pinch.finger_count(),
+                self._touch.is_dragging(),
+            )
         scale_delta = self._pinch.handle_event(event, allow_zoom=allow_zoom)
         if scale_delta:
+            if _debug_enabled():
+                logger.info("gesture: ZOOM step %+d (decision: %s)", scale_delta, why)
             self._touch.cancel_gesture()
         return scale_delta
 
