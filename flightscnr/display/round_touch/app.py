@@ -148,6 +148,7 @@ class RoundTouchDisplay:
         self._panning_map = False
         self._pan_offset = (0, 0)
         self._pan_drag_start = None
+        self._rgb_slider_channel: int | None = None
 
         radar._init_sweep()
         map_bg.request_background()
@@ -403,6 +404,9 @@ class RoundTouchDisplay:
         self._maybe_reflash_alerts(previous)
 
     def _set_settings_page(self, page: int):
+        if self._rgb_slider_channel is not None:
+            settings.persist_theme_settings()
+            self._rgb_slider_channel = None
         if page != self.settings_page:
             self._scroll.reset()
             if page not in (info.PAGE_DISPLAY, info.PAGE_OPTIONS):
@@ -870,6 +874,15 @@ class RoundTouchDisplay:
         self._safe_draw()
 
     def _handle_scroll_drag(self):
+        if self.screen == SCREEN_SETTINGS and self.settings_page == info.PAGE_COLORS:
+            if self._rgb_slider_channel is not None:
+                self.input.consume_scroll_drag()
+                return
+            if self.input.is_dragging():
+                pos = self.input.drag_pos()
+                if pos and info.theme_slider_at(pos[0], pos[1], self._scroll.offset) is not None:
+                    self.input.consume_scroll_drag()
+                    return
         dy = self.input.consume_scroll_drag()
         if not dy:
             return
@@ -879,6 +892,44 @@ class RoundTouchDisplay:
             self._apply_scroll_delta(-dy)
         elif self.screen == SCREEN_SETTINGS:
             self._apply_scroll_delta(-dy)
+
+    def _apply_theme_slider(self, channel: int, x: int, *, persist: bool) -> bool:
+        value = info.theme_slider_value_at(x, channel, self._scroll.offset)
+        if value is None:
+            return False
+        rgb = list(settings.theme_rgb())
+        if rgb[channel] == value and settings.theme_custom():
+            return False
+        rgb[channel] = value
+        settings.set_custom_theme_rgb(*rgb, persist=persist)
+        return True
+
+    def _update_theme_rgb_drag(self) -> bool:
+        """Horizontal drag on Theme RGB sliders; suppresses page scroll while active."""
+        if self.screen != SCREEN_SETTINGS or self.settings_page != info.PAGE_COLORS:
+            if self._rgb_slider_channel is not None:
+                settings.persist_theme_settings()
+                self._rgb_slider_channel = None
+            return False
+        if not self.input.is_dragging():
+            if self._rgb_slider_channel is not None:
+                settings.persist_theme_settings()
+                self._rgb_slider_channel = None
+                self.input.consume_scroll_drag()
+                return True
+            return False
+        pos = self.input.drag_pos()
+        if pos is None:
+            return False
+        x, y = pos
+        if self._rgb_slider_channel is None:
+            channel = info.theme_slider_at(x, y, self._scroll.offset)
+            if channel is None:
+                return False
+            self._rgb_slider_channel = channel
+        changed = self._apply_theme_slider(self._rgb_slider_channel, x, persist=False)
+        self.input.consume_scroll_drag()
+        return changed
 
     def _handle_settings_tap(self, x: int | None = None, y: int | None = None):
         if (
@@ -893,6 +944,10 @@ class RoundTouchDisplay:
             row = info.theme_row_at(x, y, self._scroll.offset)
             if row is not None:
                 settings.set_theme_index(row)
+                return
+            channel = info.theme_slider_at(x, y, self._scroll.offset)
+            if channel is not None:
+                self._apply_theme_slider(channel, x, persist=True)
 
     def _handle_navigation(self):
         if time.time() < self._boot_until:
@@ -1362,7 +1417,7 @@ class RoundTouchDisplay:
                                 self._apply_scale_step(scale_delta)
                         self._handle_navigation()
 
-                if self._update_facing_drag() or self._update_map_pan_drag():
+                if self._update_facing_drag() or self._update_map_pan_drag() or self._update_theme_rgb_drag():
                     self._safe_draw()
                     self._last_radar_draw = time.time()
 
