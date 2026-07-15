@@ -51,7 +51,7 @@ The UI is designed for a **4in round LCD with touch** (default layout: **720x720
 
 #### Radar features
 
-- Animated radar sweep with configurable accent **color themes** (Red, Yellow, Orange, Green, White)
+- Animated radar sweep with configurable accent **color themes** (Red, Yellow, Green, White)
 - Optional **compass rose** and **sweep line** (toggle in portal)
 - **Facing direction** — rotate the radar so “up” on the screen matches how the Pi is physically mounted (see below)
 - **Map tile background** (CARTO dark or OpenStreetMap) with cached tiles in `/var/lib/flightscnr/maps/`

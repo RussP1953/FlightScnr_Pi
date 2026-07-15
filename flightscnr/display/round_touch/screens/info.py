@@ -103,18 +103,48 @@ def tap_footer_action(x: int, y: int) -> str | None:
 
 def _theme_row_metrics() -> tuple[int, int, int, int]:
     body_font = _display_font()
-    swatch_size = theme.s(20)
-    swatch_gap = theme.s(10)
+    swatch_size = theme.s(18)
+    swatch_gap = theme.s(8)
     max_label_w = max(body_font.size(name)[0] for name in color_presets.THEME_NAMES)
-    row_h = max(swatch_size, body_font.get_height()) + theme.s(6)
+    row_h = max(swatch_size, body_font.get_height()) + theme.s(4)
     block_w = swatch_size + swatch_gap + max_label_w
     return swatch_size, row_h, max_label_w, block_w
+
+
+def _theme_slider_metrics() -> tuple[int, int, int, int]:
+    """track_w, row_h, label_w, value_w for RGB rows."""
+    body_font = _display_font()
+    label_w = max(body_font.size(ch)[0] for ch in ("R", "G", "B"))
+    value_w = body_font.size("255")[0]
+    track_w = theme.s(140)
+    row_h = body_font.get_height() + theme.s(6)
+    return track_w, row_h, label_w, value_w
+
+
+def _theme_section_gaps() -> tuple[int, int, int]:
+    """top_pad, preset→custom gap, custom heading height."""
+    return theme.s(2), theme.s(6), theme.s(18)
+
+
+def _theme_content_height() -> int:
+    _, preset_h, _, _ = _theme_row_metrics()
+    _, slider_h, _, _ = _theme_slider_metrics()
+    top_pad, section_gap, heading_h = _theme_section_gaps()
+    return (
+        top_pad
+        + color_presets.THEME_COUNT * preset_h
+        + section_gap
+        + heading_h
+        + 3 * slider_h
+        + theme.s(4)
+    )
 
 
 def _theme_layout(scroll_offset: int) -> tuple[int, int, int]:
     top = nav.content_top_y(has_dots=True)
     _, row_h, _, _ = _theme_row_metrics()
-    return top + theme.s(4) - scroll_offset, row_h, color_presets.THEME_COUNT
+    top_pad, _, _ = _theme_section_gaps()
+    return top + top_pad - scroll_offset, row_h, color_presets.THEME_COUNT
 
 
 def theme_row_at(x: int, y: int, scroll_offset: int = 0) -> int | None:
@@ -127,6 +157,55 @@ def theme_row_at(x: int, y: int, scroll_offset: int = 0) -> int | None:
         if rect.collidepoint(x, y):
             return i
     return None
+
+
+def _theme_slider_geometry(scroll_offset: int = 0) -> list[tuple[pygame.Rect, int, int]]:
+    """Per-channel (hit_rect, track_x, track_w)."""
+    top = nav.content_top_y(has_dots=True)
+    _, preset_h, _, _ = _theme_row_metrics()
+    track_w, slider_h, label_w, value_w = _theme_slider_metrics()
+    top_pad, section_gap, heading_h = _theme_section_gaps()
+    gap = theme.s(8)
+    y0 = (
+        top
+        + top_pad
+        + color_presets.THEME_COUNT * preset_h
+        + section_gap
+        + heading_h
+        - scroll_offset
+    )
+    block_w = label_w + gap + track_w + gap + value_w
+    track_x = theme.CENTER_X - block_w // 2 + label_w + gap
+    hit_pad = theme.s(8)
+    out: list[tuple[pygame.Rect, int, int]] = []
+    for i in range(3):
+        ry = y0 + i * slider_h
+        hit = pygame.Rect(
+            track_x - hit_pad,
+            int(ry),
+            track_w + 2 * hit_pad,
+            slider_h,
+        )
+        out.append((hit, track_x, track_w))
+    return out
+
+
+def theme_slider_at(x: int, y: int, scroll_offset: int = 0) -> int | None:
+    """Return 0/1/2 for R/G/B if (x,y) hits a slider row, else None."""
+    for i, (hit, _, _) in enumerate(_theme_slider_geometry(scroll_offset)):
+        if hit.collidepoint(x, y):
+            return i
+    return None
+
+
+def theme_slider_value_at(x: int, channel: int, scroll_offset: int = 0) -> int | None:
+    """Map screen x on slider *channel* to 0–255."""
+    rows = _theme_slider_geometry(scroll_offset)
+    if channel < 0 or channel >= len(rows):
+        return None
+    _, track_x, track_w = rows[channel]
+    t = (x - track_x) / max(1, track_w)
+    return max(0, min(255, int(round(t * 255))))
 
 
 def _display_font():
@@ -303,12 +382,16 @@ def draw_info(surface, page: int, scroll_offset: int = 0, display_focus: int = 0
 
     else:
         active = settings.theme_index()
+        custom = settings.theme_custom()
+        rgb = settings.theme_rgb()
         swatch_size, row_h, max_label_w, block_w = _theme_row_metrics()
-        swatch_gap = theme.s(10)
-        total_h = theme.s(4) + color_presets.THEME_COUNT * row_h
+        swatch_gap = theme.s(8)
+        track_w, slider_h, label_w, value_w = _theme_slider_metrics()
+        top_pad, section_gap, heading_h = _theme_section_gaps()
+        total_h = _theme_content_height()
         max_scroll = max(0, total_h - (bottom - top))
 
-        y = top + theme.s(4) - scroll_offset
+        y = top + top_pad - scroll_offset
         swatch_x = theme.CENTER_X - block_w // 2
         label_x = swatch_x + swatch_size + swatch_gap
         text_h = body_font.get_height()
@@ -320,15 +403,71 @@ def draw_info(surface, page: int, scroll_offset: int = 0, display_focus: int = 0
             palette = color_presets.THEMES[i]
             accent = palette["sweep"]
             row_rect = pygame.Rect(swatch_x, int(ry), block_w, row_h)
-            if i == active:
+            if i == active and not custom:
                 pygame.draw.rect(surface, theme.GRID, row_rect, 1)
             swatch_y = int(ry + (row_h - swatch_size) // 2)
             text_y = int(ry + (row_h - text_h) // 2)
             swatch_rect = pygame.Rect(swatch_x, swatch_y, swatch_size, swatch_size)
-            label = body_font.render(name, True, theme.LABEL if i == active else theme.MUTED)
+            label = body_font.render(
+                name, True, theme.LABEL if (i == active and not custom) else theme.MUTED
+            )
             surface.blit(label, (label_x, text_y))
             pygame.draw.rect(surface, accent, swatch_rect)
             pygame.draw.rect(surface, palette["grid"], swatch_rect, max(1, theme.s(2)))
+
+        # Custom RGB section under the presets.
+        slider_gap = theme.s(8)
+        section_y = y + color_presets.THEME_COUNT * row_h + section_gap
+        heading = body_font.render(
+            "Custom", True, theme.LABEL if custom else theme.MUTED
+        )
+        heading_x = theme.CENTER_X - heading.get_width() // 2
+        if section_y + heading_h >= top and section_y <= bottom:
+            surface.blit(heading, (heading_x, int(section_y + (heading_h - text_h) // 2)))
+            # Live preview swatch next to the heading.
+            preview = pygame.Rect(
+                heading_x + heading.get_width() + theme.s(8),
+                int(section_y + (heading_h - swatch_size) // 2),
+                swatch_size,
+                swatch_size,
+            )
+            pygame.draw.rect(surface, rgb, preview)
+            pygame.draw.rect(surface, theme.GRID, preview, max(1, theme.s(1)))
+
+        slider_y0 = section_y + heading_h
+        block_w_s = label_w + slider_gap + track_w + slider_gap + value_w
+        left_x = theme.CENTER_X - block_w_s // 2
+        track_x = left_x + label_w + slider_gap
+        channel_colors = ((220, 64, 64), (64, 180, 64), (64, 120, 220))
+        channel_labels = ("R", "G", "B")
+        for i, (ch, col) in enumerate(zip(channel_labels, channel_colors)):
+            ry = slider_y0 + i * slider_h
+            if ry + slider_h < top or ry > bottom:
+                continue
+            label = body_font.render(ch, True, theme.MUTED)
+            surface.blit(
+                label,
+                (left_x, int(ry + (slider_h - text_h) // 2)),
+            )
+            track_cy = int(ry + slider_h // 2)
+            track_rect = pygame.Rect(track_x, track_cy - max(2, theme.s(2)), track_w, max(4, theme.s(4)))
+            pygame.draw.rect(surface, theme.HINT, track_rect, border_radius=theme.s(2))
+            fill_w = int(round((rgb[i] / 255.0) * track_w))
+            if fill_w > 0:
+                fill_rect = pygame.Rect(track_x, track_rect.y, fill_w, track_rect.height)
+                pygame.draw.rect(surface, col, fill_rect, border_radius=theme.s(2))
+            knob_x = track_x + fill_w
+            knob_r = max(5, theme.s(6))
+            pygame.draw.circle(surface, col, (knob_x, track_cy), knob_r)
+            pygame.draw.circle(surface, theme.LABEL, (knob_x, track_cy), knob_r, max(1, theme.s(1)))
+            value = body_font.render(str(rgb[i]), True, theme.MUTED)
+            surface.blit(
+                value,
+                (
+                    track_x + track_w + slider_gap,
+                    int(ry + (slider_h - text_h) // 2),
+                ),
+            )
 
     nav.draw_footer_buttons(surface, list(FOOTER_BUTTONS))
     return max_scroll

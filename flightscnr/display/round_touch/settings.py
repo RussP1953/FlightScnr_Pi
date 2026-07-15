@@ -25,6 +25,9 @@ _defaults = {
     "show_precipitation": True,
     "scale_index": 1,
     "theme_index": color_presets.DEFAULT_THEME_INDEX,
+    "theme_custom": False,
+    "custom_theme_rgb": list(color_presets.DEFAULT_CUSTOM_RGB),
+    "theme_palette_v": color_presets.THEME_PALETTE_V,
     "clock_12hr": True,
     "auto_timezone": True,
     "min_height_ft": 1000,
@@ -149,6 +152,8 @@ def _load():
         migrated = True
     state["ais_enabled"] = state["traffic_mode"] in ("marine", "both")
     state["facing_deg"] = _normalize_facing(state.get("facing_deg", 0))
+    if color_presets.migrate_theme_index(state):
+        migrated = True
     if migrated:
         _save(state)
     return state
@@ -167,6 +172,8 @@ def _settings_snapshot(state: dict) -> tuple:
         state.get("scale_index"),
         state.get("distance_units"),
         state.get("theme_index"),
+        state.get("theme_custom"),
+        tuple(color_presets.normalize_rgb(state.get("custom_theme_rgb"))),
         state.get("show_compass_rose"),
         _normalize_facing(state.get("facing_deg", 0)),
         state.get("show_sweep"),
@@ -492,10 +499,41 @@ def theme_index() -> int:
     return max(0, min(idx, color_presets.THEME_COUNT - 1))
 
 
+def theme_custom() -> bool:
+    return bool(_state.get("theme_custom", False))
+
+
+def custom_theme_rgb() -> tuple[int, int, int]:
+    return color_presets.normalize_rgb(_state.get("custom_theme_rgb"))
+
+
+def theme_rgb() -> tuple[int, int, int]:
+    """RGB shown on Theme sliders (custom accent or active preset sweep)."""
+    if theme_custom():
+        return custom_theme_rgb()
+    return color_presets.THEMES[theme_index()]["sweep"]
+
+
 def set_theme_index(index: int):
-    _state["theme_index"] = max(0, min(int(index), color_presets.THEME_COUNT - 1))
+    idx = max(0, min(int(index), color_presets.THEME_COUNT - 1))
+    _state["theme_index"] = idx
+    _state["theme_custom"] = False
+    _state["custom_theme_rgb"] = list(color_presets.THEMES[idx]["sweep"])
     _save(_state)
     apply_theme_colors()
+
+
+def set_custom_theme_rgb(r: int, g: int, b: int, *, persist: bool = True):
+    _state["theme_custom"] = True
+    _state["custom_theme_rgb"] = list(color_presets.normalize_rgb((r, g, b)))
+    if persist:
+        _save(_state)
+    apply_theme_colors()
+
+
+def persist_theme_settings():
+    """Flush in-memory theme edits (used after RGB slider release)."""
+    _save(_state)
 
 
 def use_12hr_clock() -> bool:
@@ -564,7 +602,10 @@ def set_clock_timeout_s(value: int):
 
 
 def apply_theme_colors():
-    palette = color_presets.THEMES[theme_index()]
+    if theme_custom():
+        palette = color_presets.palette_from_rgb(*custom_theme_rgb())
+    else:
+        palette = color_presets.THEMES[theme_index()]
     theme.GRID = palette["grid"]
     theme.CROSSHAIR = palette.get("crosshair", palette["grid"])
     theme.SWEEP = palette["sweep"]
