@@ -45,8 +45,13 @@
     },
     "helicopter": {
       "file": "helicopter.png",
-      "description": "Helicopters",
+      "description": "Civilian helicopters",
       "examples": ["H145", "H125", "EC35", "B412", "S76", "R44"]
+    },
+    "military-helicopter": {
+      "file": "military-helicopter.png",
+      "description": "Military helicopters",
+      "examples": ["H60", "H64", "CH47", "MI24", "AH1", "S70"]
     },
     "military-fighter": {
       "file": "military-fighter.png",
@@ -145,18 +150,21 @@
 
     "helicopter": ["H125", "H130", "H135", "H145", "H155", "H160", "H175", "H215", "H225",
                   "EC20", "EC25", "EC30", "EC35", "EC45", "EC55", "EC75",
-                  "AS32", "AS50", "AS55", "AS65",
+                  "AS50", "AS55", "AS65",
                   "B06", "B06T", "B105", "B212", "B214", "B222", "B230", "B407", "B412", "B429", "B430", "B505",
-                  "H60", "H64",
-                  "S55", "S58", "S61", "S64", "S65", "S70", "S76", "S92",
+                  "S55", "S58", "S61", "S64", "S76", "S92",
                   "R22", "R44", "R66",
-                  "A109", "A119", "A139", "A149", "A169", "AW09", "AW39", "AW69", "AW101", "AW139", "AW169", "AW189",
-                  "MI8", "MI17", "MI24", "MI26", "KA32"],
+                  "A109", "A119", "A139", "A149", "A169", "AW09", "AW39", "AW69", "AW139", "AW169", "AW189"],
+
+    "military-helicopter": ["H60", "H64", "H47", "UH1", "UH60", "MH60", "AH1", "AH64",
+                           "CH46", "CH47", "CH53", "MH47", "MH53", "OH58", "TH67",
+                           "AS32", "S65", "S70", "AW101", "NH90",
+                           "MI8", "MI17", "MI24", "MI26", "MI28", "KA27", "KA32", "KA50", "KA52"],
 
     "military-fighter": ["F14", "F15", "F16", "F18", "F22", "F35", "F100", "F104", "F111", "F117",
                         "EUFI", "RFAL", "HAWK", "TORN", "HURR", "SPIT",
                         "SU27", "SU30", "SU35", "MIG29", "MIG31",
-                        "JAS39", "DRAV", "M2K", "M346","T38","M339","KFIR"],
+                        "JAS39", "DRAV", "M2K", "M346","T38","M339","KFIR","MRF1","HUNT","F18S"],
 
     "military-transport": ["C17", "C130", "C5", "C2", "C12", "C21", "C26", "C27", "C37", "C40",
                           "KC10", "KC35", "KC46", "KC13",

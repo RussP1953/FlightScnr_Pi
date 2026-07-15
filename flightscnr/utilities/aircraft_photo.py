@@ -40,7 +40,7 @@ DOWNLOAD_TIMEOUT_S = 12
 META_TTL_S = 14 * 24 * 3600  # hits/misses remembered two weeks
 THUMB_WIDTH = 480
 # Bump when lookup order / type fallback rules change so stale misses retry.
-PHOTO_LOGIC_VERSION = 4
+PHOTO_LOGIC_VERSION = 5
 
 _DATA_DIR = os.environ.get("FLIGHTSCNR_DATA_DIR", "/var/lib/flightscnr")
 _CACHE_DIR = os.path.join(_DATA_DIR, "aircraft_photos")
@@ -57,6 +57,8 @@ _TYPE_ALIASES: dict[str, tuple[str, ...]] = {
     "A21N": ("Airbus A321neo", "Airbus A321-251N"),
     "B38M": ("Boeing 737 MAX 8", "Boeing 737-8"),
     "UH72": ("UH-72 Lakota", "Eurocopter EC145 Army"),
+    "H47": ("CH-47 Chinook", "Boeing CH-47 Chinook", "Chinook helicopter"),
+    "CH47": ("CH-47 Chinook", "Boeing CH-47 Chinook", "Chinook helicopter"),
 }
 
 # Prefer a specific Commons file for a type (File: title without "File:" ok).
@@ -72,7 +74,46 @@ _TYPE_PINNED: dict[str, str] = {
     "AS65": (
         "Aerospatiale MH-65D Dolphin ‘6519’ (27371268621).jpg"
     ),
+    # Planespotters often returns the wrong airframe for military helo hexes.
+    "H47": (
+        "An Army CH-47 Chinook helicopter during a training exercise "
+        "(210120-A-II094-096M).jpg"
+    ),
+    "CH47": (
+        "An Army CH-47 Chinook helicopter during a training exercise "
+        "(210120-A-II094-096M).jpg"
+    ),
 }
+
+# ICAO types that must not show a fixed-wing photo (heli / tandem-rotor / attack).
+_HELI_TYPE_CODES = frozenset({
+    "H47", "CH47", "H60", "UH1", "UH60", "MH60", "AH1", "AH64", "H64",
+    "CH46", "CH53", "MH47", "MH53", "OH58", "TH67", "AS32", "S65", "S70",
+    "AW101", "NH90", "MI8", "MI17", "MI24", "MI26", "MI28",
+    "KA27", "KA32", "KA50", "KA52", "UH72",
+    "H125", "H130", "H135", "H145", "H155", "H160", "H175", "H215", "H225",
+    "EC20", "EC25", "EC30", "EC35", "EC45", "EC55", "EC75",
+    "B407", "B412", "B429", "S76", "S92", "R22", "R44", "R66",
+    "A109", "A139", "AW139", "AW169", "AW189",
+})
+
+_FIXED_WING_PHOTO_CUES = (
+    "gulfstream", "g650", "g550", "g450", "g280", "gvii", "gvi",
+    "global 5", "global 6", "global 7", "challenger", "citation",
+    "learjet", "phenom", "emb-5", "embraer legacy", "falcon 7", "falcon 8",
+    "boeing 73", "boeing 74", "boeing 75", "boeing 76", "boeing 77", "boeing 78",
+    "airbus a3", "airbus a2", "737-", "747-", "757-", "767-", "777-", "787-",
+    "a319", "a320", "a321", "a330", "a350", "crj", "erj-", "e175", "e190",
+    "cessna 15", "cessna 17", "cessna 18", "piper pa-", "beechcraft",
+)
+
+_HELI_PHOTO_CUES = (
+    "helicopter", "heli", "chinook", "apache", "blackhawk", "black-hawk",
+    "black hawk", "sikorsky", "eurocopter", "airbus helicopters",
+    "boeing-vertol", "boeing vertol", "vertol", "tandem", "rotor",
+    "uh-60", "uh60", "ah-64", "ah64", "ch-47", "ch47", "mh-60", "mh60",
+    "mi-8", "mi-17", "mi-24", "mi-26", "ka-52", "ka-50", "bell 4", "bell uh",
+)
 
 
 def _ensure_cache_dir() -> None:
@@ -172,17 +213,96 @@ def _pick_image_url(photo: dict) -> str:
     return ""
 
 
-def _cache_entry_usable(entry: dict) -> bool:
+def _cache_entry_usable(entry: dict, *, type_code: str = "") -> bool:
     if int(entry.get("logic_version") or 0) < PHOTO_LOGIC_VERSION:
         return False
     # Type pins: drop cached type photos that aren't the pinned file.
     if entry.get("match") == "type":
-        code = normalize_type_code(entry.get("type_code") or "")
+        code = normalize_type_code(entry.get("type_code") or type_code or "")
         pinned = _TYPE_PINNED.get(code)
         if pinned:
             title = (entry.get("title") or "").replace("File:", "").strip()
             if title != pinned.strip():
                 return False
+    # Drop stale planespotters hits that clearly don't match the live type
+    # (e.g. Gulfstream photo cached against a CH-47 hex).
+    if (entry.get("source") or "") == "planespotters" and type_code:
+        fake = {"link": entry.get("page_url") or ""}
+        if not _planespotters_matches_expected_type(fake, type_code):
+            return False
+    return True
+
+
+def _planespotters_photo_text(photo: dict) -> str:
+    parts: list[str] = []
+    for key in (
+        "link",
+        "registration",
+        "aircraft",
+        "airplane",
+        "type",
+        "airline",
+        "category",
+    ):
+        val = photo.get(key)
+        if isinstance(val, dict):
+            parts.extend(str(v) for v in val.values() if v)
+        elif val:
+            parts.append(str(val))
+    return " ".join(parts).lower().replace("_", " ").replace("%20", " ")
+
+
+def _is_heli_type_code(type_code: str) -> bool:
+    code = normalize_type_code(type_code)
+    if not code:
+        return False
+    if code in _HELI_TYPE_CODES:
+        return True
+    try:
+        from display.round_touch.aircraft_type_icons import _category_for_type
+
+        return _category_for_type(code) in ("helicopter", "military-helicopter")
+    except Exception:
+        return False
+
+
+def _planespotters_matches_expected_type(photo: dict, type_code: str) -> bool:
+    """Reject planespotters hits that clash with a known ICAO type (esp. helis)."""
+    code = normalize_type_code(type_code)
+    if not code or not photo:
+        return True
+    text = _planespotters_photo_text(photo)
+    if not text.strip():
+        # No usable metadata — keep for non-heli; be cautious for helis.
+        return not _is_heli_type_code(code)
+
+    if _is_heli_type_code(code):
+        has_heli = any(tok in text for tok in _HELI_PHOTO_CUES)
+        has_fixed = any(tok in text for tok in _FIXED_WING_PHOTO_CUES)
+        if has_fixed and not has_heli:
+            return False
+        # Also require either a heli cue or the type code / display tokens.
+        name = _type_display_name(code).lower()
+        tokens = [code.lower()]
+        tokens.extend(re.findall(r"[a-z0-9\-]{3,}", name))
+        tokens.extend(
+            t.lower()
+            for t in _TYPE_ALIASES.get(code, ())
+            for t in re.findall(r"[a-z0-9\-]{3,}", t.lower())
+        )
+        # Ignore ultra-generic tokens.
+        tokens = [
+            t
+            for t in tokens
+            if t not in ("airbus", "boeing", "aircraft", "helicopters", "heli")
+        ]
+        has_type = any(t in text.replace("-", "") or t in text for t in tokens)
+        if has_heli or has_type:
+            return True
+        # Heli type but no heli/type cues and no fixed-wing conflict — still reject
+        # empty ambiguous slugs rather than show a random airframe.
+        return False
+
     return True
 
 
@@ -594,7 +714,9 @@ def lookup_aircraft_photo(
     with _lock:
         entry = meta.get(hex_id)
         if entry and not force:
-            if now - float(entry.get("ts") or 0) < META_TTL_S and _cache_entry_usable(entry):
+            if now - float(entry.get("ts") or 0) < META_TTL_S and _cache_entry_usable(
+                entry, type_code=type_code
+            ):
                 if entry.get("miss"):
                     # Misses cached before a type pin was added would stick forever;
                     # retry when we now have a pin for this type.
@@ -610,11 +732,25 @@ def lookup_aircraft_photo(
     # 1) Planespotters by hex
     logger.info("[photo] planespotters lookup %s", hex_id)
     photo = _planespotters_lookup(f"{API_HEX}/{hex_id}")
+    if photo and not _planespotters_matches_expected_type(photo, type_code):
+        logger.info(
+            "[photo] %s: rejecting planespotters hex hit (type mismatch for %s)",
+            hex_id,
+            type_code or "?",
+        )
+        photo = None
 
     # 2) Planespotters by registration
     if not photo and reg:
         logger.info("[photo] planespotters reg lookup %s", reg)
         photo = _planespotters_lookup(f"{API_REG}/{reg}")
+        if photo and not _planespotters_matches_expected_type(photo, type_code):
+            logger.info(
+                "[photo] %s: rejecting planespotters reg hit (type mismatch for %s)",
+                hex_id,
+                type_code or "?",
+            )
+            photo = None
 
     if photo:
         img_url = _pick_image_url(photo)

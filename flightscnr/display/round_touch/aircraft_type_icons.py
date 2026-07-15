@@ -34,6 +34,7 @@ _DEFAULT_CATEGORY = "large-jet-2"
 # Helicopter artwork has more padding in the source PNG; boost draw size only.
 _CATEGORY_SIZE_SCALE = {
     "helicopter": 1.85,
+    "military-helicopter": 1.85,
     "drone": 0.5,
     "military-drone": 0.5,
     "balloon": 0.5,
@@ -70,9 +71,17 @@ def _load_mapping() -> None:
             continue
         for code in codes:
             key = str(code).upper()
-            # Helicopter mapping wins over later duplicate entries (e.g. EC35).
-            if key in _type_to_category and _type_to_category[key] == "helicopter":
-                continue
+            # Prefer military-* / first explicit mapping; don't clobber a military
+            # category with a later civilian duplicate.
+            if key in _type_to_category:
+                existing = _type_to_category[key]
+                if existing.startswith("military-"):
+                    continue
+                if category.startswith("military-"):
+                    _type_to_category[key] = category
+                    continue
+                if existing in ("helicopter", "military-helicopter"):
+                    continue
             _type_to_category[key] = category
 
 
@@ -107,7 +116,10 @@ def _is_helicopter_type(plane_type: str) -> bool:
     code = "".join((plane_type or "").upper().split())
     if not code:
         return False
-    if code in _type_to_category and _type_to_category[code] == "helicopter":
+    if code in _type_to_category and _type_to_category[code] in (
+        "helicopter",
+        "military-helicopter",
+    ):
         return True
     try:
         from utilities.overhead import HELICOPTER_TYPES
@@ -120,8 +132,10 @@ def _is_helicopter_type(plane_type: str) -> bool:
 
 
 def _military_category(plane_type: str, mapped: str | None) -> str:
-    if mapped in ("military-fighter", "military-transport"):
+    if mapped in ("military-fighter", "military-transport", "military-helicopter", "military-drone"):
         return mapped
+    if _is_helicopter_type(plane_type):
+        return "military-helicopter"
     code = "".join((plane_type or "").upper().split())
     if any(code.startswith(prefix) for prefix in _FIGHTER_PREFIXES):
         return "military-fighter"

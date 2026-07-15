@@ -157,6 +157,47 @@ class TestAircraftPhoto(unittest.TestCase):
         pinned = aircraft_photo._TYPE_PINNED.get("AS65", "")
         self.assertIn("MH-65D Dolphin", pinned)
 
+    def test_h47_is_pinned(self):
+        pinned = aircraft_photo._TYPE_PINNED.get("H47", "")
+        self.assertIn("CH-47 Chinook", pinned)
+        self.assertEqual(
+            aircraft_photo._TYPE_PINNED.get("CH47"),
+            aircraft_photo._TYPE_PINNED.get("H47"),
+        )
+
+    def test_rejects_gulfstream_photo_for_chinook(self):
+        photo = {
+            "link": (
+                "https://www.planespotters.net/photo/1358748/"
+                "vp-bzf-zanoshfa-capital-gulfstream-g650-gvi"
+            ),
+            "registration": "VP-BZF",
+        }
+        self.assertFalse(
+            aircraft_photo._planespotters_matches_expected_type(photo, "H47")
+        )
+        self.assertFalse(
+            aircraft_photo._cache_entry_usable(
+                {
+                    "source": "planespotters",
+                    "page_url": photo["link"],
+                    "logic_version": aircraft_photo.PHOTO_LOGIC_VERSION,
+                },
+                type_code="H47",
+            )
+        )
+
+    def test_accepts_chinook_planespotters_photo(self):
+        photo = {
+            "link": (
+                "https://www.planespotters.net/photo/1/"
+                "12-08148-us-army-boeing-ch-47f-chinook"
+            ),
+        }
+        self.assertTrue(
+            aircraft_photo._planespotters_matches_expected_type(photo, "H47")
+        )
+
     def test_stale_type_pin_not_usable(self):
         entry = {
             "match": "type",
