@@ -14,12 +14,16 @@ from utilities.overhead import load_tracked_callsign
 
 _sweep_angle = 0.0
 _sweep_last_ms = 0
+_backdrop: pygame.Surface | None = None
+_backdrop_key = None
 
 
 def _init_sweep():
-    global _sweep_angle, _sweep_last_ms
+    global _sweep_angle, _sweep_last_ms, _backdrop, _backdrop_key
     _sweep_angle = 0.0
     _sweep_last_ms = time.time() * 1000
+    _backdrop = None
+    _backdrop_key = None
 
 
 def tick_sweep():
@@ -29,8 +33,101 @@ def tick_sweep():
         _sweep_last_ms = now
         return
     dt = now - _sweep_last_ms
+    # Cap dt so a hitch doesn't jump the beam across the dial.
+    if dt > 100:
+        dt = 100
     _sweep_last_ms = now
     _sweep_angle = (_sweep_angle + 360.0 * dt / theme.SWEEP_PERIOD_MS) % 360.0
+
+
+def _backdrop_cache_key(*, pan_mode: bool, calibrate: bool):
+    if pan_mode or calibrate:
+        return None
+    facing = round(float(settings.effective_facing_deg() or 0.0), 1)
+    bg = map_bg.get_background()
+    overlay = rainviewer_overlay.get_overlay()
+    return (
+        theme.SIZE,
+        scale.active_index(),
+        facing,
+        id(bg) if bg is not None else 0,
+        id(overlay) if overlay is not None else 0,
+        settings.show_compass_rose(),
+        settings.theme_index(),
+        settings.theme_custom(),
+        settings.theme_rgb(),
+        settings.distance_units(),
+    )
+
+
+def _ensure_backdrop(*, calibrate: bool, pan_mode: bool, pan_offset) -> pygame.Surface | None:
+    """Cached map + precip + grid (no aircraft / sweep) for cheaper radar frames."""
+    global _backdrop, _backdrop_key
+    key = _backdrop_cache_key(pan_mode=pan_mode, calibrate=calibrate)
+    if key is None:
+        return None
+    if _backdrop is not None and _backdrop_key == key and _backdrop.get_size() == (theme.SIZE, theme.SIZE):
+        return _backdrop
+
+    surf = pygame.Surface((theme.SIZE, theme.SIZE))
+    draw.fill_background(surf)
+    map_bg.draw_background(surf, pan_offset=None)
+    rainviewer_overlay.draw_overlay(surf, pan_offset=None)
+    _draw_grid(surf, calibrate=False)
+    _backdrop = surf
+    _backdrop_key = key
+    return _backdrop
+
+
+def draw_radar(
+    surface,
+    flights,
+    full_redraw=True,
+    *,
+    calibrate: bool = False,
+    pan_mode: bool = False,
+    pan_offset: tuple[int, int] | None = None,
+):
+    alert_prefs.reload()
+    offset = pan_offset if pan_mode else None
+    backdrop = None if (pan_mode or calibrate) else _ensure_backdrop(
+        calibrate=calibrate,
+        pan_mode=pan_mode,
+        pan_offset=offset,
+    )
+    if backdrop is not None:
+        surface.blit(backdrop, (0, 0))
+    else:
+        draw.fill_background(surface)
+        map_bg.request_background()
+        map_bg.draw_background(surface, pan_offset=offset)
+        rainviewer_overlay.request_overlay()
+        rainviewer_overlay.draw_overlay(surface, pan_offset=offset)
+        _draw_grid(surface, calibrate=calibrate or pan_mode)
+
+    # Keep async map/precip fetch warm even when using the cached backdrop.
+    map_bg.request_background()
+    rainviewer_overlay.request_overlay()
+
+    if pan_mode:
+        _draw_map_pan_overlay(surface, pan_offset=offset)
+    elif calibrate:
+        _draw_facing_calibrate_overlay(surface)
+    else:
+        _draw_flights(surface, flights)
+        if settings.show_sweep_line():
+            sweep = (_sweep_angle - settings.effective_facing_deg()) % 360.0
+            draw.draw_sweep_line(
+                surface,
+                sweep,
+                theme.SWEEP,
+                width=max(2, theme.s(2)),
+                trail_color=theme.SWEEP_TRAIL,
+            )
+        if aircraft_alert.rim_flash_active():
+            _draw_alert_rim_flash(surface)
+        _draw_status(surface, flights)
+        _draw_map_attribution(surface)
 
 
 def _draw_grid(surface, *, calibrate: bool = False):
@@ -372,39 +469,6 @@ def _draw_status(surface, flights):
 
     for line in lines:
         y = draw.draw_center_line(surface, line, y, font, color)
-
-
-def draw_radar(
-    surface,
-    flights,
-    full_redraw=True,
-    *,
-    calibrate: bool = False,
-    pan_mode: bool = False,
-    pan_offset: tuple[int, int] | None = None,
-):
-    alert_prefs.reload()
-    draw.fill_background(surface)
-    map_bg.request_background()
-    offset = pan_offset if pan_mode else None
-    map_bg.draw_background(surface, pan_offset=offset)
-    rainviewer_overlay.request_overlay()
-    rainviewer_overlay.draw_overlay(surface, pan_offset=offset)
-    _draw_grid(surface, calibrate=calibrate or pan_mode)
-
-    if pan_mode:
-        _draw_map_pan_overlay(surface, pan_offset=offset)
-    elif calibrate:
-        _draw_facing_calibrate_overlay(surface)
-    else:
-        _draw_flights(surface, flights)
-        if settings.show_sweep_line():
-            sweep = (_sweep_angle - settings.effective_facing_deg()) % 360.0
-            draw.draw_sweep_line(surface, sweep, theme.SWEEP, width=max(2, theme.s(2)))
-        if aircraft_alert.rim_flash_active():
-            _draw_alert_rim_flash(surface)
-        _draw_status(surface, flights)
-        _draw_map_attribution(surface)
 
 
 def _draw_alert_rim_flash(surface):

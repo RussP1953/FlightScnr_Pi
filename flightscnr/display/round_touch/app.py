@@ -1480,9 +1480,10 @@ class RoundTouchDisplay:
                     time.sleep(0.05)
                 elif self.screen == SCREEN_RADAR:
                     radar.tick_sweep()
-                    if (now - self._last_radar_draw) * 1000 >= theme.SWEEP_FRAME_MS:
+                    frame_ms = theme.SWEEP_FRAME_MS if settings.show_sweep_line() else 50
+                    if (time.time() - self._last_radar_draw) * 1000 >= frame_ms:
                         self._safe_draw()
-                        self._last_radar_draw = now
+                        self._last_radar_draw = time.time()
                 elif self.screen in (SCREEN_CLOCK, SCREEN_CLOCK_SETTINGS, SCREEN_FORECAST):
                     self._tick_clock()
                 elif self.screen == SCREEN_TRACKED:
@@ -1516,7 +1517,11 @@ class RoundTouchDisplay:
                 self._tick_auto_idle_clock()
                 self._tick_off_hours_clock()
                 self._apply_brightness()
-                time.sleep(0.01)
+                # Yield less while the sweep is animating so frames aren't padded to 10ms+.
+                if self.screen == SCREEN_RADAR and settings.show_sweep_line():
+                    time.sleep(0.001)
+                else:
+                    time.sleep(0.01)
 
         except KeyboardInterrupt:
             logger.info("Display stopped by user")

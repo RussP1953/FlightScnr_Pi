@@ -104,7 +104,8 @@ ALERT_WATCH = ALERT_OTHER
 SCALE_LABEL_BEARING_DEG = 245.5
 RING_COUNT = 3
 SWEEP_PERIOD_MS = 6000
-SWEEP_FRAME_MS = 33
+# Target ~60fps for the sweep; achieved FPS may be lower on Pi full redraws.
+SWEEP_FRAME_MS = 16
 
 
 def in_visible_circle(x: float, y: float, margin: float = 0) -> bool:

@@ -156,13 +156,13 @@
     "military-fighter": ["F14", "F15", "F16", "F18", "F22", "F35", "F100", "F104", "F111", "F117",
                         "EUFI", "RFAL", "HAWK", "TORN", "HURR", "SPIT",
                         "SU27", "SU30", "SU35", "MIG29", "MIG31",
-                        "JAS39", "DRAV", "M2K", "M346","T38","M339"],
+                        "JAS39", "DRAV", "M2K", "M346","T38","M339","KFIR"],
 
     "military-transport": ["C17", "C130", "C5", "C2", "C12", "C21", "C26", "C27", "C37", "C40",
                           "KC10", "KC35", "KC46", "KC13",
                           "E3", "E4", "E6", "E8",
                           "P3", "P8", "RC35", "V22", "CV22", "MV22",
-                          "A10", "AV8B", "T45", "T6"],
+                          "A10", "AV8B", "T45", "T6","U2"],
 
     "cargo": ["B74F", "B744F", "B748F", "B77F", "B772F", "B77LF",
              "A30F", "A306F", "MD10F", "MD11F",

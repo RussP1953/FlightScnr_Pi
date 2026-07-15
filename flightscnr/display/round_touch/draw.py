@@ -133,12 +133,46 @@ def draw_dashed_line(surface, start, end, color, width=2):
         pos += pattern
 
 
-def draw_sweep_line(surface, angle_deg: float, color, width=2):
+def draw_sweep_line(
+    surface,
+    angle_deg: float,
+    color,
+    width=2,
+    *,
+    trail_color=None,
+    trail_deg: float = 14.0,
+    trail_steps: int = 16,
+):
+    """Bright leading edge plus a short fade trail so low FPS still looks smooth."""
     cx, cy = theme.CENTER_X, theme.CENTER_Y
-    rad = math.radians(angle_deg - 90)
-    x1 = int(cx + theme.SWEEP_RADIUS * math.cos(rad))
-    y1 = int(cy + theme.SWEEP_RADIUS * math.sin(rad))
-    pygame.draw.line(surface, color, (cx, cy), (x1, y1), width)
+    radius = float(theme.SWEEP_RADIUS)
+    width = max(1, int(width))
+
+    trail = trail_color if trail_color is not None else theme.SWEEP_TRAIL
+    if sum(abs(int(trail[i]) - int(color[i])) for i in range(3)) < 40:
+        # Presets like all-green have identical trail — darken toward BG.
+        trail = tuple(max(0, int(c * 0.22)) for c in color)
+
+    def _endpoint(deg: float) -> tuple[int, int]:
+        rad = math.radians(deg - 90.0)
+        return (
+            int(round(cx + radius * math.cos(rad))),
+            int(round(cy + radius * math.sin(rad))),
+        )
+
+    def _lerp(a, b, t: float):
+        return tuple(int(round(a[i] + (b[i] - a[i]) * t)) for i in range(3))
+
+    steps = max(4, int(trail_steps))
+    for i in range(steps, 0, -1):
+        t = i / steps
+        ang = (angle_deg - trail_deg * t) % 360.0
+        # Near the tip stay closer to the accent; fall off toward trail/bg.
+        col = _lerp(color, trail, min(1.0, t * 0.92))
+        w = max(1, int(round(width * (1.0 - 0.45 * t))))
+        pygame.draw.line(surface, col, (cx, cy), _endpoint(ang), w)
+
+    pygame.draw.line(surface, color, (cx, cy), _endpoint(angle_deg % 360.0), width)
 
 
 def draw_error(surface: pygame.Surface, message: str):
