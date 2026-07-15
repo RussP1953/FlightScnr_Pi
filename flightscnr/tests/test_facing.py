@@ -130,6 +130,17 @@ class TestLatLonFacing(unittest.TestCase):
             self.assertEqual(x, geo.theme.CENTER_X)
             self.assertGreater(y, geo.theme.CENTER_Y)
 
+    def test_screen_to_lat_lon_roundtrip(self):
+        from display.round_touch import geo
+
+        with patch("display.round_touch.geo.LOCATION_HOME", [51.5, -0.1]):
+            self.settings.set_facing_deg(0)
+            target = (51.52, -0.08)
+            x, y = geo.lat_lon_to_screen(*target)
+            lat, lon = geo.screen_to_lat_lon(x, y)
+            self.assertAlmostEqual(lat, target[0], places=4)
+            self.assertAlmostEqual(lon, target[1], places=4)
+
 
 if __name__ == "__main__":
     unittest.main()

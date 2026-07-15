@@ -56,7 +56,7 @@
     "military-transport": {
       "file": "military-transport.png",
       "description": "Military transport/cargo aircraft",
-      "examples": ["C17", "C130", "C5", "KC135", "E3"]
+      "examples": ["C17", "C130", "C5", "KC135", "E3","E6"]
     },
     "cargo": {
       "file": "cargo.png",
@@ -156,7 +156,7 @@
     "military-fighter": ["F14", "F15", "F16", "F18", "F22", "F35", "F100", "F104", "F111", "F117",
                         "EUFI", "RFAL", "HAWK", "TORN", "HURR", "SPIT",
                         "SU27", "SU30", "SU35", "MIG29", "MIG31",
-                        "JAS39", "DRAV", "M2K", "M346","T38"],
+                        "JAS39", "DRAV", "M2K", "M346","T38","M339"],
 
     "military-transport": ["C17", "C130", "C5", "C2", "C12", "C21", "C26", "C27", "C37", "C40",
                           "KC10", "KC35", "KC46", "KC13",

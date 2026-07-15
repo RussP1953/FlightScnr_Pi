@@ -94,7 +94,7 @@ _VESSEL_PINNED: dict[str, str] = {
 }
 
 # Bump when match rules change so stale wrong hits (e.g. animal/people photos) are dropped.
-FILTER_VERSION = 5
+FILTER_VERSION = 6
 
 _MARITIME_TOKENS = (
     "ship", "vessel", "boat", "ferry", "tanker", "cargo", "container",
@@ -167,6 +167,26 @@ _AMBIGUOUS_SINGLE_NAMES = frozenset({
 })
 
 
+# Compound / glued maritime cues in the vessel name itself (FIREBOAT, LIFEBOAT).
+_MARITIME_NAME_STEMS = (
+    "boat", "ship", "ferry", "tug", "barge", "yacht", "cutter",
+    "trawler", "tanker", "freighter", "schooner", "dredger",
+)
+# Stems above also appear inside people/trade words — strip those first.
+_FALSE_MARITIME_COMPOUNDS = (
+    "shipbuilder", "boatbuilder", "shipwright", "boatwright",
+    "shipmate", "shipman", "boatman", "boating",
+)
+
+
+def _text_has_maritime_stem(text: str) -> bool:
+    """True when text contains boat/ship/… outside known non-vessel compounds."""
+    compact = re.sub(r"[^a-z0-9]", "", (text or "").lower())
+    for bad in _FALSE_MARITIME_COMPOUNDS:
+        compact = compact.replace(bad, "")
+    return any(stem in compact for stem in _MARITIME_NAME_STEMS)
+
+
 def _name_tokens(name: str) -> list[str]:
     """Significant tokens from a vessel name (drop tiny filler words)."""
     stop = {"THE", "OF", "AND", "A", "AN", "MV", "MS", "MT", "SS", "HMS", "RMS"}
@@ -174,10 +194,16 @@ def _name_tokens(name: str) -> list[str]:
     for tok in re.findall(r"[A-Z0-9]+", _normalize_name(name)):
         if tok in stop:
             continue
-        if len(tok) < 2:
+        # Keep hull numbers ("FIREBOAT 3") — only drop single-letter filler ("JEFFREY M").
+        if len(tok) < 2 and not tok.isdigit():
             continue
         tokens.append(tok)
     return tokens
+
+
+def _name_has_maritime_stem(name: str) -> bool:
+    """True when the vessel name itself contains boat/ship/ferry/…"""
+    return _text_has_maritime_stem(name)
 
 
 def _has_imo(imo: str = "") -> bool:
@@ -242,8 +268,8 @@ def _name_is_searchable(name: str, *, imo: str = "") -> bool:
     if len(tokens) == 1 and tokens[0] in _AMBIGUOUS_SINGLE_NAMES and not _has_imo(imo):
         return False
     # Any other single-token name without IMO is too easy to confuse with
-    # wildlife / landmarks / logos on Commons.
-    if len(tokens) == 1 and not _has_imo(imo):
+    # wildlife / landmarks / logos — unless the name itself is maritime (FIREBOAT).
+    if len(tokens) == 1 and not _has_imo(imo) and not _name_has_maritime_stem(clean):
         return False
     # "Dr. Ray" / "Capt. Smith" without IMO → people photos dominate Commons.
     # First+Last names (Matthew Turner) stay searchable but need a title ship cue.
@@ -293,18 +319,31 @@ def _name_matches_haystack(name: str, haystack: str) -> bool:
     tokens = _name_tokens(name)
     if not tokens:
         return False
-    # All significant tokens must appear (handles "QUEEN MARY 2")
-    hits = sum(1 for tok in tokens if tok.lower() in haystack)
-    if len(tokens) == 1:
-        return hits == 1
-    # Allow one miss for long multi-word names, but require majority
-    return hits >= max(2, (len(tokens) + 1) // 2) and hits >= len(tokens) - 1
+    alpha = [t for t in tokens if not t.isdigit()]
+    digits = [t for t in tokens if t.isdigit()]
+    check = alpha or tokens
+    hits = sum(1 for tok in check if tok.lower() in haystack)
+    if len(check) == 1:
+        if hits != 1:
+            return False
+    else:
+        # Allow one miss for long multi-word names, but require majority
+        if not (hits >= max(2, (len(check) + 1) // 2) and hits >= len(check) - 1):
+            return False
+    # Multi-word named ships keep hull numbers ("QUEEN MARY 2").
+    # Single stem + number ("FIREBOAT 3") may omit the digit on Commons.
+    if digits and len(alpha) >= 2:
+        return any(d in haystack for d in digits)
+    return True
 
 
 def _has_maritime_context(haystack: str, imo: str = "") -> bool:
     if imo and str(imo).isdigit() and str(imo) in haystack.replace(" ", ""):
         return True
-    return any(_word_in_text(tok, haystack) for tok in _MARITIME_TOKENS)
+    if any(_word_in_text(tok, haystack) for tok in _MARITIME_TOKENS):
+        return True
+    # Compound words ("fireboat", "lifeboat") have no free-standing "boat" token.
+    return _text_has_maritime_stem(haystack)
 
 
 def _title_has_maritime_cue(title: str) -> bool:
@@ -312,7 +351,9 @@ def _title_has_maritime_cue(title: str) -> bool:
     # Strip "File:" prefix noise
     if t.startswith("file:"):
         t = t[5:]
-    return any(_word_in_text(tok, t) for tok in _TITLE_MARITIME_TOKENS)
+    if any(_word_in_text(tok, t) for tok in _TITLE_MARITIME_TOKENS):
+        return True
+    return _text_has_maritime_stem(t)
 
 
 def _looks_like_non_vessel(haystack: str, *, name: str = "") -> bool:

@@ -316,10 +316,12 @@ def _index_zone_flights_by_callsign(flights: list) -> dict[str, LiveFlight]:
 
     index: dict[str, LiveFlight] = {}
     for lf in flights:
-        for key in callsign_match_keys(lf.callsign):
-            existing = index.get(key)
-            if existing is None or distance_from_flight_to_home(lf) < distance_from_flight_to_home(existing):
-                index[key] = lf
+        labels = [lf.callsign, getattr(lf, "registration", "") or ""]
+        for label in labels:
+            for key in callsign_match_keys(label):
+                existing = index.get(key)
+                if existing is None or distance_from_flight_to_home(lf) < distance_from_flight_to_home(existing):
+                    index[key] = lf
     return index
 
 
@@ -929,6 +931,16 @@ class Overhead:
                         if has_special_livery and airline_name:
                             livery_note = "special livery"
 
+                        # Prefer Mode-S hex from the live-feed extra_info; details as backup.
+                        icao_hex = (getattr(f, "icao_hex", None) or "").strip().upper()
+                        if not icao_hex:
+                            raw_hex = self.safe_get(d, "aircraft_info", "icao_address", default="") or ""
+                            icao_hex = str(raw_hex).strip().upper().replace("0X", "")
+
+                        registration = (getattr(f, "registration", None) or "").strip().upper()
+                        # ADS-B often only has the N-number; FR24 sometimes has reg but blank callsign.
+                        display_cs = (callsign or registration or "").strip()
+
                         entry = {
                             "airline": airline_name,
                             "plane": plane,
@@ -952,7 +964,9 @@ class Overhead:
                             "altitude": f.altitude,
                             "ground_speed": f.ground_speed or 0,
                             "heading": f.heading or 0,
-                            "callsign": callsign,
+                            "callsign": display_cs,
+                            "registration": registration,
+                            "icao_hex": icao_hex,
                             "distance_origin": dist_o,
                             "distance_destination": dist_d,
                             "distance": distance_from_flight_to_home(f),
@@ -1004,12 +1018,14 @@ class Overhead:
                 _LIVE_FIELDS = (
                     "plane_latitude", "plane_longitude", "altitude",
                     "heading", "ground_speed", "vertical_speed",
-                    "squawk", "db_flags", "icao_hex",
+                    "squawk", "db_flags", "icao_hex", "registration", "callsign", "plane",
                 )
                 from utilities.aircraft_alert import (
                     apply_adsb_alert_fields,
                     callsign_match_keys,
                     dedupe_flights,
+                    flight_identity_keys,
+                    flights_share_identity,
                     merge_live_fields,
                 )
 
@@ -1017,10 +1033,17 @@ class Overhead:
                     if (flight_dict.get("origin") or "").strip() and (flight_dict.get("destination") or "").strip():
                         return
                     lf = _lookup_zone_flight(zone_by_callsign, flight_dict.get("callsign"))
+                    if lf is None and flight_dict.get("registration"):
+                        lf = _lookup_zone_flight(zone_by_callsign, flight_dict.get("registration"))
                     if lf is None:
                         return
                     if not _enrich_entry_from_zone_feed(flight_dict, lf, stats):
                         return
+                    # Copy FR24 identity onto ADS-B-only shells so later dedupe sticks.
+                    if getattr(lf, "icao_hex", None) and not flight_dict.get("icao_hex"):
+                        flight_dict["icao_hex"] = lf.icao_hex
+                    if getattr(lf, "registration", None) and not flight_dict.get("registration"):
+                        flight_dict["registration"] = lf.registration
                     stats["feed_enriched"] += 1
                     stats["flight_details"].append({
                         "callsign": flight_dict.get("callsign", "?"),
@@ -1033,17 +1056,27 @@ class Overhead:
 
                 by_callsign.clear()
                 by_hex: dict[str, dict] = {}
+                by_identity: dict[str, dict] = {}
                 for existing in overhead_data:
                     hx = (existing.get("icao_hex") or "").strip().upper()
                     if hx:
                         by_hex[hx] = existing
                     for key in callsign_match_keys(existing.get("callsign")):
                         by_callsign[key] = existing
+                    for key in callsign_match_keys(existing.get("registration")):
+                        by_callsign[key] = existing
+                    for key in flight_identity_keys(existing):
+                        by_identity[key] = existing
 
                 for entry in adsb_entries:
                     keys = callsign_match_keys(entry.get("callsign"))
                     hx = (entry.get("icao_hex") or "").strip().upper()
                     target = by_hex.get(hx) if hx else None
+                    if target is None:
+                        for ik in flight_identity_keys(entry):
+                            target = by_identity.get(ik)
+                            if target is not None:
+                                break
                     if target is None:
                         target = next((by_callsign[k] for k in keys if k in by_callsign), None)
                     if target is None:
@@ -1060,12 +1093,27 @@ class Overhead:
                                 if elat is None or elon is None:
                                     continue
                                 d = geo.distance_km(lat, lon, elat, elon)
-                                if d <= 0.45 and (best_d is None or d < best_d):
-                                    best_d = d
-                                    best = existing
+                                if d > 1.2:
+                                    continue
+                                same_type = (
+                                    (entry.get("plane") or "").strip().upper()
+                                    and (entry.get("plane") or "").strip().upper()
+                                    == (existing.get("plane") or "").strip().upper()
+                                )
+                                if d <= 0.45 or same_type or flights_share_identity(entry, existing):
+                                    if best_d is None or d < best_d:
+                                        best_d = d
+                                        best = existing
                             target = best
                     if target is not None:
                         merge_live_fields(target, entry, _LIVE_FIELDS)
+                        if not (target.get("callsign") or "").strip():
+                            target["callsign"] = entry.get("callsign") or target.get("callsign")
+                        if not (target.get("registration") or "").strip():
+                            # ADS-B N-number callsigns double as registration.
+                            cs = (entry.get("callsign") or "").strip().upper()
+                            if cs.startswith("N") and len(cs) > 1 and cs[1].isdigit():
+                                target["registration"] = cs
                         _maybe_feed_enrich(target)
                         stats["adsb_updated"] += 1
                         continue
@@ -1078,6 +1126,8 @@ class Overhead:
                             by_callsign[key] = entry
                         if hx:
                             by_hex[hx] = entry
+                        for key in flight_identity_keys(entry):
+                            by_identity[key] = entry
                         log_flight_count(cs, entry)
 
                 apply_adsb_alert_fields(overhead_data, adsb_entries)

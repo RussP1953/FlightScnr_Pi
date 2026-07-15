@@ -543,7 +543,7 @@ def get_background() -> pygame.Surface | None:
         return _surfaces.get(key)
 
 
-def draw_background(surface: pygame.Surface):
+def draw_background(surface: pygame.Surface, pan_offset: tuple[int, int] | None = None):
     bg = get_background()
     if bg is None:
         return
@@ -554,14 +554,16 @@ def draw_background(surface: pygame.Surface):
         facing = float(settings.effective_facing_deg() or 0.0)
     except Exception:
         facing = 0.0
+    ox = int(pan_offset[0]) if pan_offset else 0
+    oy = int(pan_offset[1]) if pan_offset else 0
     if abs(facing) < 0.05:
-        rect = bg.get_rect(center=(theme.CENTER_X, theme.CENTER_Y))
+        rect = bg.get_rect(center=(theme.CENTER_X + ox, theme.CENTER_Y + oy))
         surface.blit(bg, rect)
         return
     # pygame rotates CCW; facing east-up needs the north-up map rotated CCW
     # so east moves to the top (same sense as geo.rotate_offset / the rose).
     rotated = pygame.transform.rotate(bg, facing)
-    rect = rotated.get_rect(center=(theme.CENTER_X, theme.CENTER_Y))
+    rect = rotated.get_rect(center=(theme.CENTER_X + ox, theme.CENTER_Y + oy))
     surface.blit(rotated, rect)
 
 

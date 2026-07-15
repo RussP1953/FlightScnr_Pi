@@ -145,6 +145,9 @@ class RoundTouchDisplay:
         self._calibrating_facing = False
         self._facing_before_calibrate = 0.0
         self._facing_drag_angle = None
+        self._panning_map = False
+        self._pan_offset = (0, 0)
+        self._pan_drag_start = None
 
         radar._init_sweep()
         map_bg.request_background()
@@ -287,6 +290,8 @@ class RoundTouchDisplay:
                 self.surface,
                 self._radar_flights(),
                 calibrate=self._calibrating_facing,
+                pan_mode=self._panning_map,
+                pan_offset=self._pan_offset if self._panning_map else None,
             )
         elif self.screen == SCREEN_FLIGHT:
             self._scroll.max_offset = flight_detail.draw_flight_detail(
@@ -329,16 +334,27 @@ class RoundTouchDisplay:
         draw.apply_round_bezel(self.surface)
         self._present()
 
-    def _timeout_remaining_fraction(self) -> float | None:
-        """Fraction of secondary-screen timeout remaining, or None if not applicable."""
+    def _timeout_duration_s(self) -> float | None:
+        """Active secondary-screen timeout in seconds, or None if no countdown."""
         if time.time() < self._boot_until:
             return None
         if self.screen in (SCREEN_RADAR, SCREEN_CLOCK, SCREEN_CLOCK_SETTINGS, SCREEN_FORECAST):
             return None
         if self.screen == SCREEN_TRACKED and tracked.is_pinned():
             return None
+        if self.screen == SCREEN_FLIGHT:
+            return float(settings.flight_detail_timeout_s())
+        return float(SECONDARY_TIMEOUT_S)
+
+    def _timeout_remaining_fraction(self) -> float | None:
+        """Fraction of secondary-screen timeout remaining, or None if not applicable."""
+        timeout_s = self._timeout_duration_s()
+        if timeout_s is None:
+            return None
+        if timeout_s <= 0:
+            return None
         elapsed = time.time() - self._secondary_activity
-        return max(0.0, (SECONDARY_TIMEOUT_S - elapsed) / SECONDARY_TIMEOUT_S)
+        return max(0.0, (timeout_s - elapsed) / timeout_s)
 
     def _safe_draw(self):
         try:
@@ -365,10 +381,17 @@ class RoundTouchDisplay:
             and radar.visible_in_range_count(self.flights) == 0
         )
 
+    def _radar_modal_active(self) -> bool:
+        """Facing calibrate or map pan — swallow navigation and pause traffic."""
+        return self._calibrating_facing or self._panning_map
+
     def _return_to_radar(self):
         self._fatal_error = None
         if self._calibrating_facing:
             self._cancel_facing_calibrate()
+        if self._panning_map:
+            self._cancel_map_pan()
+        previous = self.screen
         if self.screen == SCREEN_TRACKED:
             tracked.reset_marquee()
         self._radar_visible_since = time.time()
@@ -377,18 +400,30 @@ class RoundTouchDisplay:
         self.settings_page = info.PAGE_MAIN
         self._selected_flight_id = None
         self._scroll.reset()
+        self._maybe_reflash_alerts(previous)
 
     def _set_settings_page(self, page: int):
         if page != self.settings_page:
             self._scroll.reset()
-            if page != info.PAGE_DISPLAY:
+            if page not in (info.PAGE_DISPLAY, info.PAGE_OPTIONS):
                 self._display_focus = 0
         self.settings_page = page
+
+    def _maybe_reflash_alerts(self, previous_screen: str | None) -> None:
+        """Short rim pulse when coming back to radar with an alert still visible."""
+        if previous_screen == SCREEN_RADAR:
+            return
+        try:
+            flights = self._radar_flights() if hasattr(self, "_radar_flights") else self.flights
+            aircraft_alert.reflash_for_visible_alerts(flights or self.flights)
+        except Exception:
+            logger.debug("Alert reflash on radar entry failed", exc_info=True)
 
     def _open_screen(self, screen: str):
         if screen == SCREEN_CLOCK:
             self._last_clock_minute = -1
             self._last_clock_draw = 0.0
+        previous = self.screen
         if screen != self.screen:
             if self.screen == SCREEN_TRACKED:
                 tracked.reset_marquee()
@@ -396,53 +431,62 @@ class RoundTouchDisplay:
         if screen == SCREEN_RADAR:
             self._radar_visible_since = time.time()
             self._auto_idle_clock = False
-        else:
-            # Reset secondary timeout window when entering any non-radar screen.
-            # Without this, a stale timestamp can immediately bounce back to radar.
-            self._note_activity()
+            self.screen = screen
+            self._maybe_reflash_alerts(previous)
+            return
+        # Reset secondary timeout window when entering any non-radar screen.
+        # Without this, a stale timestamp can immediately bounce back to radar.
+        self._note_activity()
         self.screen = screen
         if screen == SCREEN_CLOCK:
             self._safe_draw()
 
-    def _apply_display_row(self, row: int):
+    def _apply_display_row(self, page: int, row: int):
+        action = info.display_action_at(page, row)
+        if action is None:
+            return
         self._display_focus = row
-        if row == 0:
+        if action == "traffic":
             settings.cycle_traffic_mode()
             self._last_ais_poll = 0.0
             self._tick_ais()
             self._refresh_flights()
-        elif row == 1:
+        elif action == "brightness":
             pct = settings.brightness_percent() + 10
             if pct > 100:
                 pct = 10
             settings.set_brightness_percent(pct)
             self._apply_brightness()
-        elif row == 2:
+        elif action == "units":
             settings.toggle_distance_units()
-        elif row == 3:
+        elif action == "range":
             settings.cycle_scale()
             scale.select(settings.scale_index())
             map_bg.request_background()
             rainviewer_overlay.request_overlay()
-        elif row == 4:
+        elif action == "compass":
             settings.toggle_compass_rose()
-        elif row == 5:
+        elif action == "facing":
             self._begin_facing_calibrate()
-        elif row == 6:
+        elif action == "recenter":
+            self._begin_map_pan()
+        elif action == "min_height":
             settings.cycle_min_height()
-        elif row == 7:
+        elif action == "sweep":
             settings.toggle_sweep_line()
-        elif row == 8:
+        elif action == "precipitation":
             settings.toggle_show_precipitation()
             from display.round_touch import rainviewer_overlay
 
             rainviewer_overlay.invalidate()
             rainviewer_overlay.request_overlay()
-        elif row == 9:
+        elif action == "idle_clock":
             settings.toggle_auto_idle_clock()
 
     def _begin_facing_calibrate(self):
         """Enter radar facing-calibrate mode (circular drag = dial analogue)."""
+        if self._panning_map:
+            self._cancel_map_pan()
         self._facing_before_calibrate = settings.facing_deg()
         settings.set_facing_preview(self._facing_before_calibrate)
         self._calibrating_facing = True
@@ -467,6 +511,81 @@ class RoundTouchDisplay:
         self._calibrating_facing = False
         self._facing_drag_angle = None
         self._refresh_flights()
+
+    def _begin_map_pan(self):
+        """Enter map-pan mode: drag map, tap center to set new radar home."""
+        if self._calibrating_facing:
+            self._cancel_facing_calibrate()
+        self._panning_map = True
+        self._pan_offset = (0, 0)
+        self._pan_drag_start = None
+        self.flights = []
+        self._open_screen(SCREEN_RADAR)
+
+    def _cancel_map_pan(self):
+        if not self._panning_map:
+            return
+        self._panning_map = False
+        self._pan_offset = (0, 0)
+        self._pan_drag_start = None
+        self._refresh_flights()
+
+    def _save_map_pan(self):
+        """Persist the geographic point under the crosshair as LOCATION_HOME."""
+        if not self._panning_map:
+            return
+        from config import set_location_home
+        from display.round_touch import geo, weather_data
+
+        ox, oy = self._pan_offset
+        lat, lon = geo.screen_to_lat_lon(
+            theme.CENTER_X - ox,
+            theme.CENTER_Y - oy,
+        )
+        set_location_home(lat, lon)
+        map_bg.invalidate()
+        map_bg.prewarm_all_scales()
+        rainviewer_overlay.invalidate()
+        rainviewer_overlay.request_overlay()
+        self._position_smoother.reset()
+        self._panning_map = False
+        self._pan_offset = (0, 0)
+        self._pan_drag_start = None
+
+        def _after_recenter():
+            try:
+                weather_data.after_radar_center_changed(lat, lon)
+            except Exception:
+                logger.exception("Weather/timezone refresh after map recenter failed")
+            else:
+                self._weather_redraw_pending = True
+
+        Thread(target=_after_recenter, daemon=True).start()
+        self.overhead.grab_data()
+        self._refresh_flights()
+
+    def _update_map_pan_drag(self) -> bool:
+        """Translate finger motion into a live map pixel offset."""
+        if not self._panning_map or self.screen != SCREEN_RADAR:
+            self._pan_drag_start = None
+            return False
+        if not self.input.is_dragging():
+            self._pan_drag_start = None
+            return False
+        pos = self.input.drag_pos()
+        if pos is None:
+            return False
+        if self._pan_drag_start is None:
+            self._pan_drag_start = (
+                pos[0],
+                pos[1],
+                self._pan_offset[0],
+                self._pan_offset[1],
+            )
+            return False
+        sx, sy, ox0, oy0 = self._pan_drag_start
+        self._pan_offset = (ox0 + (pos[0] - sx), oy0 + (pos[1] - sy))
+        return True
 
     @staticmethod
     def _angle_about_center(x: float, y: float) -> float:
@@ -512,6 +631,10 @@ class RoundTouchDisplay:
         if dist >= theme.VISIBLE_RADIUS - theme.s(48):
             return "cancel"
         return None
+
+    def _map_pan_tap_action(self, x: int, y: int) -> str | None:
+        """Same center/rim targets as facing calibrate."""
+        return self._facing_tap_action(x, y)
 
     def _apply_brightness(self):
         from display.round_touch import backlight, off_hours
@@ -718,8 +841,6 @@ class RoundTouchDisplay:
 
         Thread(target=_work, daemon=True).start()
 
-        Thread(target=_work, daemon=True).start()
-
     def _radar_flights(self) -> list:
         """Flights with dead-reckoned positions for radar draw / tap hit-testing."""
         return self._position_smoother.apply(self.flights)
@@ -760,10 +881,14 @@ class RoundTouchDisplay:
             self._apply_scroll_delta(-dy)
 
     def _handle_settings_tap(self, x: int | None = None, y: int | None = None):
-        if self.settings_page == info.PAGE_DISPLAY and x is not None and y is not None:
-            row = info.display_row_at(x, y, self._scroll.offset)
+        if (
+            self.settings_page in (info.PAGE_DISPLAY, info.PAGE_OPTIONS)
+            and x is not None
+            and y is not None
+        ):
+            row = info.display_row_at(x, y, self.settings_page, self._scroll.offset)
             if row is not None:
-                self._apply_display_row(row)
+                self._apply_display_row(self.settings_page, row)
         elif self.settings_page == info.PAGE_COLORS and x is not None and y is not None:
             row = info.theme_row_at(x, y, self._scroll.offset)
             if row is not None:
@@ -800,19 +925,25 @@ class RoundTouchDisplay:
         ):
             self._note_activity()
 
-        # Facing calibrate: circular drag rotates; center tap saves; rim tap cancels.
-        # Swipes from rotate-drags are discarded so they don't navigate or abort.
-        if self._calibrating_facing and self.screen == SCREEN_RADAR:
+        # Facing calibrate / map pan: center tap saves; rim tap cancels.
+        # Swipes from drag gestures are discarded so they don't navigate or abort.
+        if self._radar_modal_active() and self.screen == SCREEN_RADAR:
             if swipe != input_handler.SWIPE_NONE:
                 return
             if tap:
                 action = self._facing_tap_action(tap[0], tap[1])
                 if action == "save":
-                    self._save_facing_calibrate()
+                    if self._calibrating_facing:
+                        self._save_facing_calibrate()
+                    else:
+                        self._save_map_pan()
                     self._note_activity()
                     self._safe_draw()
                 elif action == "cancel":
-                    self._cancel_facing_calibrate()
+                    if self._calibrating_facing:
+                        self._cancel_facing_calibrate()
+                    else:
+                        self._cancel_map_pan()
                     self._note_activity()
                     self._safe_draw()
                 return
@@ -902,6 +1033,8 @@ class RoundTouchDisplay:
             elif self.screen == SCREEN_CLOCK_SETTINGS:
                 self._open_screen(SCREEN_CLOCK)
             elif self.screen == SCREEN_SETTINGS and self.settings_page == info.PAGE_COLORS:
+                self._set_settings_page(info.PAGE_OPTIONS)
+            elif self.screen == SCREEN_SETTINGS and self.settings_page == info.PAGE_OPTIONS:
                 self._set_settings_page(info.PAGE_DISPLAY)
             elif self.screen == SCREEN_SETTINGS and self.settings_page == info.PAGE_DISPLAY:
                 self._set_settings_page(info.PAGE_MAIN)
@@ -912,7 +1045,7 @@ class RoundTouchDisplay:
         elif tap and self.screen == SCREEN_RADAR:
             if self.pinch.should_suppress_tap():
                 tap = None
-            if tap and not self._calibrating_facing and self._open_flight_at(tap[0], tap[1]):
+            if tap and not self._radar_modal_active() and self._open_flight_at(tap[0], tap[1]):
                 self._safe_draw()
         elif tap and self.screen == SCREEN_FLIGHT:
             self._sync_selected_flight_index()
@@ -1009,11 +1142,13 @@ class RoundTouchDisplay:
         if self.screen == SCREEN_TRACKED and tracked.is_pinned():
             return
 
-        timeout_s = SECONDARY_TIMEOUT_S
-        if self.screen == SCREEN_FLIGHT:
-            timeout_s = settings.flight_detail_timeout_s()
-        elif self.screen in (SCREEN_CLOCK, SCREEN_CLOCK_SETTINGS, SCREEN_FORECAST):
-            timeout_s = settings.clock_timeout_s()
+        timeout_s = self._timeout_duration_s()
+        if timeout_s is None:
+            # Clock/forecast use their own duration but share activity timestamp.
+            if self.screen in (SCREEN_CLOCK, SCREEN_CLOCK_SETTINGS, SCREEN_FORECAST):
+                timeout_s = float(settings.clock_timeout_s())
+            else:
+                return
 
         if timeout_s <= 0:
             return
@@ -1036,7 +1171,7 @@ class RoundTouchDisplay:
             self._safe_draw()
 
     def _tick_auto_idle_clock(self):
-        if self._calibrating_facing:
+        if self._radar_modal_active():
             return
         if not settings.auto_idle_clock_enabled():
             return
@@ -1087,7 +1222,7 @@ class RoundTouchDisplay:
 
     def _maybe_reload_location(self):
         try:
-            from config import reload_location_override
+            from config import LOCATION_HOME, reload_location_override
             from display.round_touch import map_bg, weather_data
 
             if not reload_location_override():
@@ -1096,34 +1231,43 @@ class RoundTouchDisplay:
             map_bg.prewarm_all_scales()
             self._position_smoother.reset()
             self.overhead.grab_data()
+            lat, lon = float(LOCATION_HOME[0]), float(LOCATION_HOME[1])
 
-            def _fetch_weather():
+            def _after_recenter():
                 try:
-                    weather_data.refresh_for_location_change()
+                    weather_data.after_radar_center_changed(lat, lon)
                 except Exception:
-                    logger.exception("Weather refresh after location change failed")
+                    logger.exception("Weather/timezone refresh after location change failed")
                 else:
                     self._weather_redraw_pending = True
 
-            Thread(target=_fetch_weather, daemon=True).start()
+            Thread(target=_after_recenter, daemon=True).start()
             self._safe_draw()
         except ImportError:
             pass
 
     def _tick_data(self):
-        if self._calibrating_facing:
+        if self._radar_modal_active():
             return
         try:
             scale.select(settings.scale_index())
             self._refresh_flights()
             if not self.overhead.processing:
                 self.overhead.grab_data()
-            aircraft_alert.check_new_aircraft(self.flights)
+            if aircraft_alert.check_new_aircraft(self.flights):
+                # Don't bury attention on Idle clock / forecast — jump back to radar.
+                if self.screen in (
+                    SCREEN_CLOCK,
+                    SCREEN_CLOCK_SETTINGS,
+                    SCREEN_FORECAST,
+                ):
+                    self._return_to_radar()
+                    self._safe_draw()
         except Exception:
             logger.exception("Flight data poll failed")
 
     def _tick_ais(self):
-        if self._calibrating_facing:
+        if self._radar_modal_active():
             return
         try:
             self._refresh_ais_vessels()
@@ -1210,7 +1354,7 @@ class RoundTouchDisplay:
                         self.gestures.handle_input_event(event)
                         if (
                             self.screen == SCREEN_RADAR
-                            and not self._calibrating_facing
+                            and not self._radar_modal_active()
                             and gesture_handler.RadarGestureHandler.is_finger_event(event)
                         ):
                             scale_delta = self.gestures.handle_finger_event(event)
@@ -1218,23 +1362,23 @@ class RoundTouchDisplay:
                                 self._apply_scale_step(scale_delta)
                         self._handle_navigation()
 
-                if self._update_facing_drag():
+                if self._update_facing_drag() or self._update_map_pan_drag():
                     self._safe_draw()
                     self._last_radar_draw = time.time()
 
                 now = time.time()
-                if not self._calibrating_facing and now - last_data_poll >= DATA_REFRESH_SECONDS:
+                if not self._radar_modal_active() and now - last_data_poll >= DATA_REFRESH_SECONDS:
                     self._tick_data()
                     last_data_poll = now
 
-                if not self._calibrating_facing and now - self._last_ais_poll >= AIS_REFRESH_SECONDS:
+                if not self._radar_modal_active() and now - self._last_ais_poll >= AIS_REFRESH_SECONDS:
                     self._tick_ais()
                     self._last_ais_poll = now
 
                 grab_seq = self.overhead.grab_seq
                 if grab_seq != self._last_grab_seq:
                     self._last_grab_seq = grab_seq
-                    if not self._calibrating_facing:
+                    if not self._radar_modal_active():
                         self._refresh_flights()
                         if self.screen == SCREEN_TRACKED:
                             self._safe_draw()
@@ -1298,12 +1442,18 @@ class RoundTouchDisplay:
                         else DATA_REFRESH_SECONDS
                     )
                     if self._timeout_remaining_fraction() is not None:
-                        interval = min(interval, 0.25)
+                        # Match radar cadence so the perimeter countdown crawls smoothly.
+                        interval = min(interval, theme.SWEEP_FRAME_MS / 1000.0)
                     if (now - self._last_static_draw) >= interval:
                         self._safe_draw()
                         self._last_static_draw = now
                 elif self.screen in (SCREEN_FLIGHT, SCREEN_SETTINGS, SCREEN_DETAILS):
-                    if (now - self._last_static_draw) >= 0.25:
+                    interval = (
+                        theme.SWEEP_FRAME_MS / 1000.0
+                        if self._timeout_remaining_fraction() is not None
+                        else 0.25
+                    )
+                    if (now - self._last_static_draw) >= interval:
                         self._safe_draw()
                         self._last_static_draw = now
 

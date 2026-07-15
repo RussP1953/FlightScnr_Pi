@@ -146,6 +146,12 @@ def refresh(force: bool = False) -> dict | None:
 
     temp_hum = grab_temperature_and_humidity()
     intervals = grab_forecast("display")
+    try:
+        from utilities.temperature import current_weather_code
+
+        realtime_code = current_weather_code()
+    except ImportError:
+        realtime_code = None
     no_temp = (
         temp_hum is None
         or (
@@ -165,6 +171,7 @@ def refresh(force: bool = False) -> dict | None:
             "sunrise": "—",
             "sunset": "—",
             "weather_label": "—",
+            "weather_code": None,
             "ready": False,
         }
         _CACHE["ts"] = now
@@ -174,7 +181,7 @@ def refresh(force: bool = False) -> dict | None:
 
     temp, humidity = temp_hum if temp_hum else (None, None)
     days = _parse_days(intervals or [])
-    current_code = days[0].get("weather_code") if days else None
+    current_code = days[0].get("weather_code") if days else realtime_code
     payload = {
         "temp": temp,
         "humidity": humidity,
@@ -183,6 +190,7 @@ def refresh(force: bool = False) -> dict | None:
         "sunrise": days[0].get("sunrise") if days else "—",
         "sunset": days[0].get("sunset") if days else "—",
         "weather_label": _weather_code_label(current_code),
+        "weather_code": current_code,
         "ready": temp is not None or bool(days),
     }
     _CACHE["ts"] = now
@@ -211,3 +219,19 @@ def refresh_for_location_change() -> dict | None:
         pass
     logger.info("Refreshing weather for new radar center")
     return refresh(force=True)
+
+
+def after_radar_center_changed(lat: float, lon: float) -> dict | None:
+    """Weather + local time after the radar center moves."""
+    payload = refresh_for_location_change()
+    try:
+        from display.round_touch import settings
+
+        if settings.auto_timezone_enabled():
+            from utilities.tz_lookup import invalidate_cache, maybe_apply_auto_timezone
+
+            invalidate_cache()
+            maybe_apply_auto_timezone(float(lat), float(lon))
+    except Exception:
+        logger.exception("Timezone refresh after radar center change failed")
+    return payload

@@ -123,6 +123,7 @@ class LiveFlight:
     aircraft_code: str
     on_ground: bool
     eta: int  # estimated arrival unix timestamp (0 if unknown)
+    icao_hex: str = ""
 
     # Fields populated after get_flight_details
     airline_name: str = ""
@@ -455,6 +456,19 @@ class FR24Client:
             registration = (getattr(extra, 'reg', '') or '') if extra else ''
             aircraft_type = (getattr(extra, 'type', '') or '') if extra else ''
             vspeed = (getattr(extra, 'vspeed', 0) or 0) if extra else 0
+            icao_hex = ""
+            if extra is not None:
+                raw_hex = getattr(extra, 'icao_address', None)
+                if raw_hex is None or raw_hex == "":
+                    raw_hex = 0
+                try:
+                    # Proto may expose Mode-S as int or hex string.
+                    if isinstance(raw_hex, int):
+                        icao_hex = f"{raw_hex:06X}" if raw_hex else ""
+                    else:
+                        icao_hex = str(raw_hex).strip().upper().replace("0X", "")
+                except (TypeError, ValueError):
+                    icao_hex = ""
 
             schedule = getattr(extra, 'schedule', None) if extra else None
             eta = 0
@@ -481,6 +495,7 @@ class FR24Client:
                 aircraft_code=aircraft_type,
                 on_ground=f.on_ground,
                 eta=eta,
+                icao_hex=icao_hex,
             )
             flights.append(lf)
         return flights

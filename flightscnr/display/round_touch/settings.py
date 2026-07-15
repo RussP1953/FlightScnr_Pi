@@ -9,6 +9,7 @@ logger = logging.getLogger("flightscnr.display")
 
 DATA_DIR = os.environ.get("FLIGHTSCNR_DATA_DIR", "/var/lib/flightscnr")
 SETTINGS_PATH = os.path.join(DATA_DIR, "round_touch_settings.json")
+RELOAD_REQUEST_PATH = os.path.join(DATA_DIR, "round_touch_settings.reload")
 _settings_mtime: float | None = None
 
 MIN_HEIGHT_OPTIONS = (0, 500, 1000, 1500)
@@ -182,17 +183,45 @@ def _settings_snapshot(state: dict) -> tuple:
     )
 
 
+def request_reload() -> None:
+    """Ask the display process to re-apply settings from disk (cross-process)."""
+    try:
+        os.makedirs(DATA_DIR, exist_ok=True)
+        with open(RELOAD_REQUEST_PATH, "w", encoding="utf-8") as fh:
+            fh.write("1\n")
+        try:
+            os.chmod(RELOAD_REQUEST_PATH, 0o666)
+        except OSError:
+            pass
+        # Bump settings mtime too so pollers that only watch the json notice.
+        if os.path.isfile(SETTINGS_PATH):
+            os.utime(SETTINGS_PATH, None)
+    except OSError as exc:
+        logger.warning("Could not request settings reload: %s", exc)
+
+
+def _consume_reload_request() -> bool:
+    if not os.path.isfile(RELOAD_REQUEST_PATH):
+        return False
+    try:
+        os.unlink(RELOAD_REQUEST_PATH)
+    except OSError:
+        return False
+    return True
+
+
 def reload() -> bool:
     """Reload settings from disk if file changed externally."""
     global _state, _settings_mtime
+    force = _consume_reload_request()
     try:
         with open(SETTINGS_PATH, encoding="utf-8") as f:
             data = json.load(f)
     except (OSError, json.JSONDecodeError, TypeError):
-        return False
+        return force
 
     incoming = {**_defaults, **data}
-    if _settings_snapshot(incoming) == _settings_snapshot(_state):
+    if not force and _settings_snapshot(incoming) == _settings_snapshot(_state):
         try:
             _settings_mtime = os.path.getmtime(SETTINGS_PATH)
         except OSError:

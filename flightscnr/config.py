@@ -141,8 +141,9 @@ def _apply_home(lat: float, lon: float, source: str | None = None) -> bool:
         LOCATION_SOURCE = source
     elif LOCATION_SOURCE == "unset":
         LOCATION_SOURCE = "home_radius"
-    if not os.environ.get("TEMPERATURE_LOCATION", "").strip():
-        TEMPERATURE_LOCATION = f"{lat},{lon}"
+    # Weather always follows the radar center when home moves. An env-only
+    # TEMPERATURE_LOCATION used to freeze weather at the boot-time coordinates.
+    TEMPERATURE_LOCATION = f"{lat},{lon}"
     return changed
 
 

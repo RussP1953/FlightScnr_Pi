@@ -82,7 +82,7 @@ def _draw_grid(surface, *, calibrate: bool = False):
         return
 
     use_units = settings.distance_units()
-    scale_font = draw.load_font(theme.FONT_DETAIL)
+    scale_font = draw.load_font(theme.FONT_TAG, bold=True)
     outer_km = scale.active_band()["label_km"]
     for ring in range(1, theme.RING_COUNT + 1):
         ring_km = outer_km * ring / theme.RING_COUNT
@@ -258,9 +258,10 @@ def _flight_icon_color(flight, *, compact: bool):
     if _is_tracked(flight) and not compact:
         return theme.SWEEP
     if aircraft_alert.is_highlighted(flight):
+        # Pulse between alert color (red/blue) and normal aircraft yellow.
         if aircraft_alert.pulse_phase():
-            return theme.ALERT_FLASH
-        return theme.GRID
+            return aircraft_alert.alert_pulse_color(flight)
+        return aircraft_alert.alert_color(flight)
     if vessel_declutter.is_vessel(flight) and vessel_declutter.hierarchy_enabled():
         if vessel_declutter.is_parked(flight):
             return theme.VESSEL_PARKED
@@ -373,24 +374,98 @@ def _draw_status(surface, flights):
         y = draw.draw_center_line(surface, line, y, font, color)
 
 
-def draw_radar(surface, flights, full_redraw=True, *, calibrate: bool = False):
+def draw_radar(
+    surface,
+    flights,
+    full_redraw=True,
+    *,
+    calibrate: bool = False,
+    pan_mode: bool = False,
+    pan_offset: tuple[int, int] | None = None,
+):
     alert_prefs.reload()
     draw.fill_background(surface)
     map_bg.request_background()
-    map_bg.draw_background(surface)
+    offset = pan_offset if pan_mode else None
+    map_bg.draw_background(surface, pan_offset=offset)
     rainviewer_overlay.request_overlay()
-    rainviewer_overlay.draw_overlay(surface)
-    _draw_grid(surface, calibrate=calibrate)
+    rainviewer_overlay.draw_overlay(surface, pan_offset=offset)
+    _draw_grid(surface, calibrate=calibrate or pan_mode)
 
-    if not calibrate:
+    if pan_mode:
+        _draw_map_pan_overlay(surface, pan_offset=offset)
+    elif calibrate:
+        _draw_facing_calibrate_overlay(surface)
+    else:
         _draw_flights(surface, flights)
         if settings.show_sweep_line():
             sweep = (_sweep_angle - settings.effective_facing_deg()) % 360.0
             draw.draw_sweep_line(surface, sweep, theme.SWEEP, width=max(2, theme.s(2)))
+        if aircraft_alert.rim_flash_active():
+            _draw_alert_rim_flash(surface)
         _draw_status(surface, flights)
         _draw_map_attribution(surface)
-    else:
-        _draw_facing_calibrate_overlay(surface)
+
+
+def _draw_alert_rim_flash(surface):
+    """Pulse the visible rim so a new mil/squawk/watch alert is hard to miss."""
+    color = aircraft_alert.rim_flash_color()
+    width = max(6, theme.s(7))
+    # Match timeout-ring placement so the bezel does not clip the stroke.
+    r = theme.VISIBLE_RADIUS - width // 2 - theme.s(1)
+    pygame.draw.circle(
+        surface,
+        color,
+        (theme.CENTER_X, theme.CENTER_Y),
+        r,
+        width,
+    )
+
+
+def _draw_map_pan_overlay(surface, pan_offset: tuple[int, int] | None = None):
+    """Tips while dragging the map to set a new radar center."""
+    title = draw.load_font(theme.s(14), bold=True)
+    font = draw.load_font(theme.s(11))
+    ox = int(pan_offset[0]) if pan_offset else 0
+    oy = int(pan_offset[1]) if pan_offset else 0
+    # Geographic point currently under the crosshair after the map shift.
+    preview_lat, preview_lon = geo.screen_to_lat_lon(
+        theme.CENTER_X - ox,
+        theme.CENTER_Y - oy,
+    )
+    center_line = f"{preview_lat:.5f}, {preview_lon:.5f}"
+    lines = [
+        ("Recenter map", title, theme.LABEL),
+        ("Drag map · tap center to save", font, theme.HINT),
+        ("Tap rim to cancel", font, theme.MUTED),
+        (center_line, font, theme.MUTED),
+    ]
+    pad_x = theme.s(8)
+    pad_y = theme.s(6)
+    gap = theme.s(1)
+    rendered = [(fo.render(text, True, color), fo) for text, fo, color in lines]
+    text_w = max(r.get_width() for r, _ in rendered)
+    text_h = sum(r.get_height() for r, _ in rendered) + gap * (len(rendered) - 1)
+    panel_w = text_w + pad_x * 2
+    panel_h = text_h + pad_y * 2
+    panel_rect = pygame.Rect(0, 0, panel_w, panel_h)
+    panel_rect.centerx = theme.CENTER_X
+    panel_rect.top = theme.CENTER_Y + theme.s(14)
+    panel = pygame.Surface((panel_w, panel_h), pygame.SRCALPHA)
+    panel.fill((0, 0, 0, 200))
+    pygame.draw.rect(panel, (*theme.GRID[:3], 90), panel.get_rect(), max(1, theme.s(1)))
+    surface.blit(panel, panel_rect.topleft)
+    y = panel_rect.top + pad_y
+    for surf, _fo in rendered:
+        surface.blit(surf, surf.get_rect(midtop=(theme.CENTER_X, y)))
+        y += surf.get_height() + gap
+    pygame.draw.circle(
+        surface,
+        theme.LABEL,
+        (theme.CENTER_X, theme.CENTER_Y),
+        max(3, theme.s(4)),
+        max(1, theme.s(2)),
+    )
 
 
 def _draw_facing_calibrate_overlay(surface):

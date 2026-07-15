@@ -170,6 +170,7 @@
                 <span class="switch"><input id="idle_clock" type="checkbox"><span class="track"></span></span>
             </div>
             <button class="btn btn-primary" id="btn-display" style="margin-top:.7rem" type="button">Save display settings</button>
+            <button class="btn" id="btn-save-reload" style="margin-top:.55rem" type="button">Save &amp; reload on display</button>
             <div id="display-status" class="status"></div>
         </div>
     </details>
@@ -658,6 +659,53 @@ async function saveDisplay() {
     }
 }
 
+async function saveAndReloadSettings() {
+    clearStatus("display-status");
+    try {
+        await jsonFetch("/radar", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                distance_units: $("dist_units").value,
+                range_value: $("range_value").value.trim(),
+                min_height_ft: Number($("min_height").value),
+                theme_index: Number($("radar_theme").value),
+                show_compass_rose: $("show_compass").checked,
+                facing_deg: Number($("facing_deg").value),
+                show_sweep_line: $("show_sweep").checked,
+                show_precipitation: $("show_precip").checked,
+                traffic_mode: $("traffic_mode").value,
+            }),
+        });
+        await jsonFetch("/display", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                brightness_percent: Number($("bright_pct").value),
+                flight_detail_timeout_s: Number($("detail_timeout").value),
+                clock_timeout_s: Number($("clock_timeout").value),
+                auto_idle_clock: $("idle_clock").checked,
+            }),
+        });
+        const loc = ($("radar_center").value || "").trim();
+        if (loc) {
+            await jsonFetch("/location/set", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ location: loc }),
+            });
+        }
+        const data = await jsonFetch("/settings/reload", { method: "POST" });
+        showStatus(
+            "display-status",
+            data.message || "Settings saved; display will reload shortly."
+        );
+        await loadAll();
+    } catch (e) {
+        showStatus("display-status", e.message, true);
+    }
+}
+
 async function saveOffHours() {
     clearStatus("offhours-status");
     try {
@@ -883,6 +931,7 @@ $("btn-reboot").addEventListener("click", () => requestSystemAction("reboot"));
 $("btn-shutdown").addEventListener("click", () => requestSystemAction("shutdown"));
 $("btn-radar").addEventListener("click", saveRadar);
 $("btn-display").addEventListener("click", saveDisplay);
+$("btn-save-reload").addEventListener("click", saveAndReloadSettings);
 $("btn-offhours").addEventListener("click", saveOffHours);
 $("btn-weather").addEventListener("click", saveWeather);
 $("btn-alerts").addEventListener("click", saveAlerts);

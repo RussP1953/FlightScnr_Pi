@@ -213,14 +213,14 @@ def location_set():
         return jsonify({"message": str(exc)}), 400
     try:
         set_location_home(lat, lon)
-        # Force one immediate weather fetch after location change so
-        # clock/forecast updates without waiting for the normal cache TTL.
+        # Force weather + timezone for the new center (display also refreshes
+        # when it picks up location.json).
         try:
             from display.round_touch import weather_data
 
-            weather_data.refresh_for_location_change()
+            weather_data.after_radar_center_changed(lat, lon)
         except Exception:
-            print("Weather refresh after location save failed")
+            print("Weather/timezone refresh after location save failed")
         try:
             from display.round_touch import map_bg, rainviewer_overlay
 
@@ -483,6 +483,23 @@ def display_save():
             "clock_timeout_s": settings.clock_timeout_s(),
             "auto_idle_clock": settings.auto_idle_clock_enabled(),
             "message": "Display settings saved.",
+        }
+    )
+
+
+@app.post("/settings/reload")
+def settings_reload():
+    """Signal the on-device display to re-apply settings / location from disk."""
+    from display.round_touch import settings
+
+    settings.request_reload()
+    try:
+        reload_location_override()
+    except Exception:
+        pass
+    return jsonify(
+        {
+            "message": "Display will reload settings within about a second.",
         }
     )
 

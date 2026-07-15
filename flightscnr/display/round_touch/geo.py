@@ -90,6 +90,29 @@ def lat_lon_to_screen(lat: float, lon: float):
     return enu_to_screen(dx_km, dy_km)
 
 
+def screen_to_lat_lon(x: float, y: float, center_lat=None, center_lon=None):
+    """Inverse of lat_lon_to_screen: pixel → WGS84 using current facing/scale."""
+    if center_lat is None:
+        center_lat = LOCATION_HOME[0]
+    if center_lon is None:
+        center_lon = LOCATION_HOME[1]
+    facing = settings.effective_facing_deg()
+    outer_km = scale.active_band()["label_km"]
+    px_per_km = theme.GRID_OUTER_RADIUS / outer_km
+    rdx = (float(x) - theme.CENTER_X) / px_per_km
+    rdy = (theme.CENTER_Y - float(y)) / px_per_km
+    rad = math.radians(facing or 0.0)
+    cos_a = math.cos(rad)
+    sin_a = math.sin(rad)
+    # Inverse of rotate_offset(facing).
+    dx_km = rdx * cos_a + rdy * sin_a
+    dy_km = -rdx * sin_a + rdy * cos_a
+    lat = float(center_lat) + dy_km / 110.574
+    cos_lat = max(0.01, math.cos(math.radians(float(center_lat))))
+    lon = float(center_lon) + dx_km / (111.320 * cos_lat)
+    return lat, lon
+
+
 def beyond_ring_position(lat: float, lon: float):
     dx_km, dy_km, dist_km = local_offset_km(lat, lon)
     if dist_km < 0.01 or dist_km <= inner_ring_max_km():

@@ -26,12 +26,28 @@ from display.round_touch import color_presets, draw, nav, settings, theme
 
 PAGE_MAIN = 0
 PAGE_DISPLAY = 1
-PAGE_COLORS = 2
-PAGE_COUNT = 3
+PAGE_OPTIONS = 2
+PAGE_COLORS = 3
+PAGE_COUNT = 4
 
 FOOTER_BUTTONS = ("prev", "next", "radar")
 
-DISPLAY_ROW_COUNT = 9
+# Display + Options were one tall page; split so both fit the round viewport.
+DISPLAY_ACTIONS = (
+    "traffic",
+    "brightness",
+    "units",
+    "range",
+    "compass",
+    "facing",
+    "recenter",
+)
+OPTIONS_ACTIONS = (
+    "min_height",
+    "sweep",
+    "precipitation",
+    "idle_clock",
+)
 
 
 def _hostname():
@@ -59,6 +75,8 @@ def _breadcrumb(page: int) -> list[str]:
     trail = ["Radar", "Settings"]
     if page == PAGE_DISPLAY:
         trail.append("Display")
+    elif page == PAGE_OPTIONS:
+        trail.append("Options")
     elif page == PAGE_COLORS:
         trail.append("Theme")
     return trail
@@ -116,16 +134,30 @@ def _display_font():
     return draw.load_font(theme.s(14))
 
 
-def _display_layout(scroll_offset: int = 0) -> tuple[int, int, int]:
+def _settings_row_page(page: int) -> bool:
+    return page in (PAGE_DISPLAY, PAGE_OPTIONS)
+
+
+def _row_actions(page: int) -> tuple[str, ...]:
+    if page == PAGE_DISPLAY:
+        return DISPLAY_ACTIONS
+    if page == PAGE_OPTIONS:
+        return OPTIONS_ACTIONS
+    return ()
+
+
+def _display_layout(page: int, scroll_offset: int = 0) -> tuple[int, int, int]:
     top = nav.content_top_y(has_dots=True)
     body_font = _display_font()
     row_y = top + theme.s(4) - scroll_offset
     row_h = body_font.get_height() + theme.s(6)
-    return row_y, row_h, DISPLAY_ROW_COUNT
+    return row_y, row_h, len(_row_actions(page))
 
 
-def display_row_at(x: int, y: int, scroll_offset: int = 0) -> int | None:
-    row_y, row_h, count = _display_layout(scroll_offset)
+def display_row_at(x: int, y: int, page: int, scroll_offset: int = 0) -> int | None:
+    if not _settings_row_page(page):
+        return None
+    row_y, row_h, count = _display_layout(page, scroll_offset)
     body_font = _display_font()
     top = nav.content_top_y(has_dots=True)
     bottom = nav.content_bottom_y()
@@ -143,6 +175,73 @@ def display_row_at(x: int, y: int, scroll_offset: int = 0) -> int | None:
         if rect.collidepoint(x, y):
             return i
     return None
+
+
+def display_action_at(page: int, row: int) -> str | None:
+    actions = _row_actions(page)
+    if 0 <= row < len(actions):
+        return actions[row]
+    return None
+
+
+def _display_row_labels() -> list[str]:
+    units = settings.distance_units()
+    rose = "on" if settings.show_compass_rose() else "off"
+    facing = settings.facing_label()
+    return [
+        f"Traffic: {settings.traffic_mode_label()}",
+        f"Brightness: {settings.brightness_percent()}%",
+        f"Units: {units}",
+        f"Range: {settings.scale_label()}",
+        f"Compass Rose: {rose}",
+        f"Facing: {facing}",
+        "Recenter map",
+    ]
+
+
+def _options_row_labels() -> list[str]:
+    sweep = "on" if settings.show_sweep_line() else "off"
+    precip = "on" if settings.show_precipitation() else "off"
+    idle = "on" if settings.auto_idle_clock_enabled() else "off"
+    return [
+        f"Min height: {settings.min_height_ft()} ft",
+        f"Sweep line: {sweep}",
+        f"Precipitation: {precip}",
+        f"Idle clock: {idle}",
+    ]
+
+
+def _draw_settings_rows(
+    surface,
+    rows: list[str],
+    scroll_offset: int,
+    display_focus: int,
+    top: int,
+    bottom: int,
+) -> int:
+    body_font = _display_font()
+    row_y = top + theme.s(4) - scroll_offset
+    row_h = body_font.get_height() + theme.s(6)
+    total_h = theme.s(4) + len(rows) * row_h
+    max_scroll = max(0, total_h - (bottom - top))
+    for i, line in enumerate(rows):
+        ry = row_y + i * row_h
+        if ry + body_font.get_height() < top or ry > bottom:
+            continue
+        text_w, text_h = body_font.size(line)
+        pad_x = theme.s(10)
+        pad_y = theme.s(3)
+        # Hug the label — full-circle width looked like a weird tall bar.
+        rect = pygame.Rect(
+            theme.CENTER_X - text_w // 2 - pad_x,
+            ry - pad_y,
+            text_w + pad_x * 2,
+            text_h + pad_y * 2,
+        )
+        if i == display_focus:
+            pygame.draw.rect(surface, theme.GRID, rect, max(1, theme.s(1)))
+        draw.draw_center_line(surface, line, int(ry), body_font, theme.MUTED)
+    return max_scroll
 
 
 def draw_info(surface, page: int, scroll_offset: int = 0, display_focus: int = 0) -> int:
@@ -183,46 +282,24 @@ def draw_info(surface, page: int, scroll_offset: int = 0, display_focus: int = 0
         )
 
     elif page == PAGE_DISPLAY:
-        units = settings.distance_units()
-        rose = "on" if settings.show_compass_rose() else "off"
-        sweep = "on" if settings.show_sweep_line() else "off"
-        precip = "on" if settings.show_precipitation() else "off"
-        idle = "on" if settings.auto_idle_clock_enabled() else "off"
-        traffic = settings.traffic_mode_label()
-        facing = settings.facing_label()
-        # Traffic first — otherwise it clips off the round viewport.
-        rows = [
-            f"Traffic: {traffic}",
-            f"Brightness: {settings.brightness_percent()}%",
-            f"Units: {units}",
-            f"Range: {settings.scale_label()}",
-            f"Compass Rose: {rose}",
-            f"Facing: {facing}",
-            f"Min height: {settings.min_height_ft()} ft",
-            f"Sweep line: {sweep}",
-            f"Precipitation: {precip}",
-            f"Idle clock: {idle}",
-        ]
-        row_y, row_h, _ = _display_layout(scroll_offset)
-        total_h = theme.s(4) + len(rows) * row_h
-        max_scroll = max(0, total_h - (bottom - top))
-        for i, line in enumerate(rows):
-            ry = row_y + i * row_h
-            if ry + body_font.get_height() < top or ry > bottom:
-                continue
-            text_w, text_h = body_font.size(line)
-            pad_x = theme.s(10)
-            pad_y = theme.s(3)
-            # Hug the label — full-circle width looked like a weird tall bar.
-            rect = pygame.Rect(
-                theme.CENTER_X - text_w // 2 - pad_x,
-                ry - pad_y,
-                text_w + pad_x * 2,
-                text_h + pad_y * 2,
-            )
-            if i == display_focus:
-                pygame.draw.rect(surface, theme.GRID, rect, max(1, theme.s(1)))
-            draw.draw_center_line(surface, line, int(ry), body_font, theme.MUTED)
+        max_scroll = _draw_settings_rows(
+            surface,
+            _display_row_labels(),
+            scroll_offset,
+            display_focus,
+            top,
+            bottom,
+        )
+
+    elif page == PAGE_OPTIONS:
+        max_scroll = _draw_settings_rows(
+            surface,
+            _options_row_labels(),
+            scroll_offset,
+            display_focus,
+            top,
+            bottom,
+        )
 
     else:
         active = settings.theme_index()

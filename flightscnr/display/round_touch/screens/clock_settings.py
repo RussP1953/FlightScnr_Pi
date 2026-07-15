@@ -48,8 +48,9 @@ def apply_row(row: int) -> None:
         if settings.auto_timezone_enabled():
             try:
                 from config import LOCATION_HOME
-                from utilities.tz_lookup import maybe_apply_auto_timezone
+                from utilities.tz_lookup import invalidate_cache, maybe_apply_auto_timezone
 
+                invalidate_cache()
                 maybe_apply_auto_timezone(LOCATION_HOME[0], LOCATION_HOME[1])
             except ImportError:
                 pass

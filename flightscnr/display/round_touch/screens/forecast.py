@@ -43,7 +43,15 @@ def draw_forecast(surface):
     days = wx.get("days") or []
     if not days:
         y += theme.s(12)
-        draw.draw_center_line(surface, "Loading forecast…", y, body_font, theme.HINT)
+        draw.draw_center_line(surface, "Forecast unavailable", y, body_font, theme.HINT)
+        y += theme.s(8)
+        draw.draw_center_line(
+            surface,
+            "Will retry automatically",
+            y,
+            detail_font,
+            theme.HINT,
+        )
         return
 
     unit = wx.get("unit") or "C"

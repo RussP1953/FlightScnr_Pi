@@ -185,19 +185,23 @@ def draw_timeout_ring(surface: pygame.Surface, remaining_fraction: float) -> Non
     if remaining_fraction <= 0:
         return
 
-    cx, cy = theme.CENTER_X, theme.CENTER_Y
+    cx, cy = float(theme.CENTER_X), float(theme.CENTER_Y)
     width = max(2, theme.s(3))
-    r = theme.VISIBLE_RADIUS - width // 2 - theme.s(2)
+    r = float(theme.VISIBLE_RADIUS - width // 2 - theme.s(2))
 
     if remaining_fraction >= 0.999:
-        pygame.draw.circle(surface, theme.SWEEP, (cx, cy), r, width)
+        pygame.draw.circle(surface, theme.SWEEP, (int(cx), int(cy)), int(round(r)), width)
         return
 
     start = -math.pi / 2
     sweep = 2 * math.pi * remaining_fraction
-    steps = max(24, int(r * sweep / 2))
+    # ~1 px along the arc so the tip crawls instead of stepping facet edges.
+    steps = max(48, int(math.ceil(r * sweep)))
     points = [
-        (cx + int(r * math.cos(start + sweep * i / steps)), cy + int(r * math.sin(start + sweep * i / steps)))
+        (
+            cx + r * math.cos(start + sweep * i / steps),
+            cy + r * math.sin(start + sweep * i / steps),
+        )
         for i in range(steps + 1)
     ]
     if len(points) >= 2:

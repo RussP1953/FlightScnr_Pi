@@ -389,7 +389,7 @@ def get_overlay() -> pygame.Surface | None:
         return _surfaces.get(key)
 
 
-def draw_overlay(surface: pygame.Surface) -> None:
+def draw_overlay(surface: pygame.Surface, pan_offset: tuple[int, int] | None = None) -> None:
     overlay = get_overlay()
     if overlay is None:
         return
@@ -400,12 +400,14 @@ def draw_overlay(surface: pygame.Surface) -> None:
         facing = float(settings.effective_facing_deg() or 0.0)
     except Exception:
         facing = 0.0
+    ox = int(pan_offset[0]) if pan_offset else 0
+    oy = int(pan_offset[1]) if pan_offset else 0
     if abs(facing) < 0.05:
-        rect = overlay.get_rect(center=(theme.CENTER_X, theme.CENTER_Y))
+        rect = overlay.get_rect(center=(theme.CENTER_X + ox, theme.CENTER_Y + oy))
         surface.blit(overlay, rect)
         return
     rotated = pygame.transform.rotate(overlay, facing)
-    rect = rotated.get_rect(center=(theme.CENTER_X, theme.CENTER_Y))
+    rect = rotated.get_rect(center=(theme.CENTER_X + ox, theme.CENTER_Y + oy))
     surface.blit(rotated, rect)
 
 

@@ -32,11 +32,18 @@ class TestVesselPhotoHelpers(unittest.TestCase):
         self.assertFalse(vessel_photo._name_is_searchable("STAR"))
         self.assertFalse(vessel_photo._name_is_searchable("RACOON"))
         self.assertFalse(vessel_photo._name_is_searchable("EAGLE"))
+        self.assertFalse(vessel_photo._name_is_searchable("LEITEIRO"))
+        self.assertFalse(vessel_photo._name_is_searchable("JEFFREY M"))
         # Single-word animal name is OK only with an IMO
         self.assertTrue(vessel_photo._name_is_searchable("RACOON", imo="9123456"))
         self.assertTrue(vessel_photo._name_is_searchable("QUEEN MARY 2"))
+        # Maritime stem / hull number stay searchable without IMO
+        self.assertTrue(vessel_photo._name_is_searchable("FIREBOAT 3"))
+        self.assertTrue(vessel_photo._name_is_searchable("FIREBOAT"))
+        self.assertEqual(vessel_photo._name_tokens("FIREBOAT 3"), ["FIREBOAT", "3"])
         self.assertEqual(vessel_photo._search_queries("ROSE"), [])
         self.assertEqual(vessel_photo._search_queries("RACOON"), [])
+        self.assertTrue(any("FIREBOAT" in q for q in vessel_photo._search_queries("FIREBOAT 3")))
 
     def test_rejects_person_like_names_without_imo(self):
         self.assertFalse(vessel_photo._name_is_searchable("DR RAY"))

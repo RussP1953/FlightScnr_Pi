@@ -122,10 +122,11 @@ def _draw_weather_row(surface, y: int, wx, body_font, detail_font) -> int:
         return y
 
     unit = wx.get("unit") or "C"
-    code = None
-    days = wx.get("days") or []
-    if days:
-        code = days[0].get("weather_code")
+    code = wx.get("weather_code")
+    if code is None:
+        days = wx.get("days") or []
+        if days:
+            code = days[0].get("weather_code")
     sunrise = wx.get("sunrise")
     sunset = wx.get("sunset")
 
@@ -133,6 +134,8 @@ def _draw_weather_row(surface, y: int, wx, body_font, detail_font) -> int:
     temp_line = f"{int(round(temp))}°{unit}"
     temp_img = body_font.render(temp_line, True, theme.ROUTE)
     cond = wx.get("weather_label") or ""
+    if cond == "—":
+        cond = ""
     cond_img = detail_font.render(cond, True, theme.HINT) if cond else None
 
     text_h = temp_img.get_height()

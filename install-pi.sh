@@ -67,8 +67,78 @@ install_apt_packages() {
         libsdl2-2.0-0 libsdl2-dev libfreetype6-dev \
         libjpeg-dev zlib1g-dev \
         fonts-dejavu-core \
+        plymouth plymouth-themes \
         unzip git curl
     log_ok "System packages ready"
+}
+
+install_boot_splash() {
+    # Custom Plymouth splash + hide firmware rainbow splash on Raspberry Pi OS.
+    local src="$APP_DIR/assets/boot/splash.png"
+    local pix_dir="/usr/share/plymouth/themes/pix"
+    local pix_splash="$pix_dir/splash.png"
+    local config=""
+    local cmdline=""
+
+    log_step "Boot splash (FlightScnr)"
+
+    if [ ! -f "$src" ]; then
+        log_warn "Missing $src — skipped boot splash install"
+        return 0
+    fi
+
+    if [ ! -d "$pix_dir" ]; then
+        log_warn "Plymouth pix theme not found — skipped boot splash install"
+        return 0
+    fi
+
+    # Prefer Bookworm firmware partition layout.
+    if [ -f /boot/firmware/config.txt ]; then
+        config="/boot/firmware/config.txt"
+        cmdline="/boot/firmware/cmdline.txt"
+    elif [ -f /boot/config.txt ]; then
+        config="/boot/config.txt"
+        cmdline="/boot/cmdline.txt"
+    fi
+
+    # Backup stock splash once, then install ours.
+    if [ -f "$pix_splash" ] && [ ! -f "$pix_dir/splash.png.stock" ]; then
+        cp -a "$pix_splash" "$pix_dir/splash.png.stock"
+    fi
+    install -m 0644 "$src" "$pix_splash"
+    log_ok "Installed Plymouth splash from assets/boot/splash.png"
+
+    # Ensure pix theme is selected (default on Pi OS desktop images).
+    if command -v plymouth-set-default-theme >/dev/null 2>&1; then
+        plymouth-set-default-theme pix >/dev/null 2>&1 || true
+        if command -v update-initramfs >/dev/null 2>&1; then
+            update-initramfs -u >/dev/null 2>&1 || log_warn "update-initramfs failed (splash may need a reboot once)"
+        fi
+        log_ok "Plymouth theme set to pix"
+    fi
+
+    if [ -n "$config" ]; then
+        if grep -qE '^\s*disable_splash=' "$config"; then
+            sed -i 's/^\s*disable_splash=.*/disable_splash=1/' "$config"
+        else
+            printf '\n# FlightScnr Pi — hide firmware rainbow splash\ndisable_splash=1\n' >> "$config"
+        fi
+        log_ok "Firmware splash disabled ($config)"
+    else
+        log_warn "Could not find config.txt — firmware splash unchanged"
+    fi
+
+    if [ -n "$cmdline" ] && [ -f "$cmdline" ]; then
+        # Keep quiet splash for Plymouth; add if missing.
+        if ! grep -qw splash "$cmdline"; then
+            # cmdline is a single line
+            sed -i 's/$/ splash/' "$cmdline"
+        fi
+        if ! grep -qw quiet "$cmdline"; then
+            sed -i 's/$/ quiet/' "$cmdline"
+        fi
+        log_ok "Kernel cmdline keeps quiet splash"
+    fi
 }
 
 install_ui_fonts() {
@@ -346,6 +416,7 @@ cmd_install() {
     install_ui_fonts
     install_weather_icons
     install_aircraft_icons
+    install_boot_splash
     extract_logos
     setup_venv
     verify_python_deps || true

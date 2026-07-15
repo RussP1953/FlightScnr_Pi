@@ -19,13 +19,29 @@ from urllib3.util.retry import Retry
 try:
     from config import TOMORROW_API_KEY
     from config import FORECAST_DAYS
-    from config import TEMPERATURE_LOCATION
+    from config import TEMPERATURE_LOCATION as _BOOT_TEMPERATURE_LOCATION
 except (ModuleNotFoundError, NameError, ImportError):
     TOMORROW_API_KEY = None
     FORECAST_DAYS = 3
-    TEMPERATURE_LOCATION = ""
+    _BOOT_TEMPERATURE_LOCATION = ""
 
 logger = logging.getLogger(__name__)
+
+
+def _temperature_location() -> str:
+    """Live radar-center weather query point (do not freeze boot-time import)."""
+    try:
+        import config
+
+        loc = (getattr(config, "TEMPERATURE_LOCATION", None) or "").strip()
+        if loc:
+            return loc
+        home = getattr(config, "LOCATION_HOME", None)
+        if home and len(home) >= 2:
+            return f"{home[0]},{home[1]}"
+    except Exception:
+        pass
+    return (_BOOT_TEMPERATURE_LOCATION or "").strip()
 
 
 def _weather_enabled() -> bool:
@@ -56,13 +72,14 @@ def _convert_temperature(value, from_units: str):
 def invalidate_caches() -> None:
     """Clear in-memory and file weather caches after portal unit change."""
     global _cached_temp, _cached_temp_ts, _cached_forecast, _cached_forecast_ts
-    global _cached_temp_units, _cached_forecast_units
+    global _cached_temp_units, _cached_forecast_units, _cached_weather_code
     _cached_temp = None
     _cached_temp_ts = 0.0
     _cached_forecast = None
     _cached_forecast_ts = 0.0
     _cached_temp_units = None
     _cached_forecast_units = None
+    _cached_weather_code = None
     for path in (_TEMP_CACHE_FILE, _FORECAST_CACHE_FILE):
         try:
             _os.remove(path)
@@ -221,15 +238,25 @@ def _save_file_cache(path, data, units: str | None = None):
 _cached_temp = None
 _cached_temp_ts = 0.0
 _cached_temp_units: str | None = None
+_cached_weather_code = None
 _TEMP_CACHE_TTL = 3600  # 1 hour
 
 # Load persistent cache on startup
 _startup_temp, _startup_temp_ts, _startup_temp_units = _load_file_cache(_TEMP_CACHE_FILE)
 if _startup_temp and (time.time() - _startup_temp_ts) < _TEMP_CACHE_TTL * 2:
-    _cached_temp = tuple(_startup_temp) if isinstance(_startup_temp, list) else _startup_temp
+    if isinstance(_startup_temp, dict):
+        _cached_temp = (_startup_temp.get("temperature"), _startup_temp.get("humidity"))
+        _cached_weather_code = _startup_temp.get("weather_code")
+    else:
+        _cached_temp = tuple(_startup_temp) if isinstance(_startup_temp, list) else _startup_temp
     _cached_temp_ts = _startup_temp_ts
     _cached_temp_units = _startup_temp_units or "metric"
     logger.info(f"Loaded cached temperature from file: {_cached_temp}")
+
+
+def current_weather_code():
+    """Latest weather code from realtime (may be None)."""
+    return _cached_weather_code
 
 
 def _return_temperature():
@@ -244,7 +271,7 @@ def grab_temperature_and_humidity():
     Fetch current temperature and humidity.
     Returns cached data if called within the cache TTL or rate limit window.
     """
-    global _cached_temp, _cached_temp_ts, _cached_temp_units
+    global _cached_temp, _cached_temp_ts, _cached_temp_units, _cached_weather_code
 
     if not _weather_enabled():
         logger.info("Tomorrow.io weather disabled in web portal settings")
@@ -271,7 +298,7 @@ def grab_temperature_and_humidity():
         request = s.get(
             f"{TOMORROW_API_URL}/weather/realtime",
             params={
-                "location": TEMPERATURE_LOCATION,
+                "location": _temperature_location(),
                 "units": _temperature_units(),
                 "apikey": TOMORROW_API_KEY
             },
@@ -292,17 +319,30 @@ def grab_temperature_and_humidity():
         data = request.json().get("data", {}).get("values", {})
         temperature = data.get("temperature")
         humidity = data.get("humidity")
+        code = data.get("weatherCode")
 
-        if temperature is None or humidity is None:
+        if temperature is None:
             logger.error("Incomplete data from Tomorrow.io API")
             if _cached_temp:
                 return _return_temperature()
             return None, None
 
+        try:
+            _cached_weather_code = int(code) if code is not None else None
+        except (TypeError, ValueError):
+            _cached_weather_code = None
         _cached_temp = (temperature, humidity)
         _cached_temp_ts = time.time()
         _cached_temp_units = "metric"
-        _save_file_cache(_TEMP_CACHE_FILE, [temperature, humidity], "metric")
+        _save_file_cache(
+            _TEMP_CACHE_FILE,
+            {
+                "temperature": temperature,
+                "humidity": humidity,
+                "weather_code": _cached_weather_code,
+            },
+            "metric",
+        )
         return _convert_temperature(temperature, "metric"), humidity
 
     except (RequestException, ValueError) as e:
@@ -383,6 +423,87 @@ if _startup_fc and (time.time() - _startup_fc_ts) < _FORECAST_CACHE_TTL * 2:
     logger.info(f"Loaded cached forecast from file ({len(_startup_fc)} intervals)")
 
 
+def _normalize_forecast_values(values: dict) -> dict:
+    """Map Tomorrow.io field aliases into the keys our UI expects."""
+    out = dict(values or {})
+    if out.get("weatherCodeFullDay") is None:
+        for key in ("weatherCodeMax", "weatherCode", "weatherCodeDay"):
+            if out.get(key) is not None:
+                out["weatherCodeFullDay"] = out.get(key)
+                break
+    return out
+
+
+def _intervals_from_timelines_payload(payload: dict) -> list:
+    data = payload.get("data") or {}
+    timelines = data.get("timelines") or []
+    if not timelines:
+        return []
+    raw = timelines[0].get("intervals") or []
+    return [
+        {
+            "startTime": item.get("startTime") or item.get("time") or "",
+            "values": _normalize_forecast_values(item.get("values") or {}),
+        }
+        for item in raw
+    ]
+
+
+def _intervals_from_weather_forecast_payload(payload: dict) -> list:
+    """Parse GET /weather/forecast daily timeline into interval dicts."""
+    timelines = payload.get("timelines") or {}
+    daily = timelines.get("daily") if isinstance(timelines, dict) else None
+    if not daily:
+        return []
+    return [
+        {
+            "startTime": item.get("time") or item.get("startTime") or "",
+            "values": _normalize_forecast_values(item.get("values") or {}),
+        }
+        for item in daily
+    ]
+
+
+def _store_forecast_intervals(intervals: list) -> list:
+    global _cached_forecast, _cached_forecast_ts, _cached_forecast_units
+    intervals = _forecast_from_today(intervals)
+    if not intervals:
+        return []
+    _cached_forecast = intervals
+    _cached_forecast_ts = time.time()
+    _cached_forecast_units = "metric"
+    _save_file_cache(_FORECAST_CACHE_FILE, intervals, "metric")
+    return _return_forecast()
+
+
+def _fetch_forecast_via_weather_endpoint(tag: str) -> list:
+    """Fallback when /timelines is forbidden on the current API key/plan."""
+    s = get_session()
+    resp = s.get(
+        f"{TOMORROW_API_URL}/weather/forecast",
+        params={
+            "location": _temperature_location(),
+            "units": _temperature_units(),
+            "timesteps": "1d",
+            "apikey": TOMORROW_API_KEY,
+        },
+        timeout=(5, 20),
+    )
+    if resp.status_code == 429:
+        _record_call("forecast")
+        _enter_backoff()
+        return []
+    resp.raise_for_status()
+    _record_call("forecast")
+    _exit_backoff()
+    intervals = _intervals_from_weather_forecast_payload(resp.json() or {})
+    if not intervals:
+        logger.error("[Forecast:%s] weather/forecast returned no daily rows", tag)
+        return []
+    logger.info("[Forecast:%s] Using weather/forecast fallback (%d days)", tag, len(intervals))
+    return _store_forecast_intervals(intervals)
+
+
 def grab_forecast(tag="unknown"):
     """
     Fetch daily forecast data.
@@ -396,8 +517,6 @@ def grab_forecast(tag="unknown"):
     if not TOMORROW_API_KEY:
         logger.warning("TOMORROW_API_KEY not set — skipping forecast fetch")
         return []
-
-    units = _temperature_units()
 
     # Return cache if still fresh (convert if display units changed)
     if _cached_forecast and (time.time() - _cached_forecast_ts) < _FORECAST_CACHE_TTL:
@@ -425,7 +544,7 @@ def grab_forecast(tag="unknown"):
             },
             params={"apikey": TOMORROW_API_KEY},
             json={
-                "location": TEMPERATURE_LOCATION,
+                "location": _temperature_location(),
                 "units": _temperature_units(),
                 "timezone": "auto",
                 "startTime": today_start.isoformat(),
@@ -452,37 +571,51 @@ def grab_forecast(tag="unknown"):
                 return _return_forecast()
             return []
 
+        # Free / restricted keys often 403 the timelines endpoint — fall back.
+        if resp.status_code in (400, 401, 403):
+            logger.warning(
+                "[Forecast:%s] timelines HTTP %s — trying weather/forecast",
+                tag,
+                resp.status_code,
+            )
+            try:
+                result = _fetch_forecast_via_weather_endpoint(tag)
+                if result:
+                    return result
+            except RequestException as fallback_exc:
+                logger.error(
+                    "[Forecast:%s] weather/forecast fallback failed: %s",
+                    tag,
+                    fallback_exc,
+                )
+            if _cached_forecast:
+                return _return_forecast()
+            return []
+
         resp.raise_for_status()
         _record_call("forecast")
         _exit_backoff()
 
-        data = resp.json().get("data", {})
-        timelines = data.get("timelines", [])
-        if not timelines:
+        intervals = _intervals_from_timelines_payload(resp.json() or {})
+        if not intervals:
             logger.error(f"[Forecast:{tag}] No timelines returned from API")
+            try:
+                result = _fetch_forecast_via_weather_endpoint(tag)
+                if result:
+                    return result
+            except RequestException:
+                pass
             if _cached_forecast:
                 return _return_forecast()
             return []
 
-        intervals = timelines[0].get("intervals", [])
-        if not intervals:
-            logger.error(f"[Forecast:{tag}] Timelines returned but no intervals")
-            if _cached_forecast:
-                return _return_forecast()
-            return []
-
-        intervals = _forecast_from_today(intervals)
-        if not intervals:
-            logger.error(f"[Forecast:{tag}] No current-or-future intervals after date filter")
-            if _cached_forecast:
-                return _return_forecast()
-            return []
-
-        _cached_forecast = intervals
-        _cached_forecast_ts = time.time()
-        _cached_forecast_units = "metric"
-        _save_file_cache(_FORECAST_CACHE_FILE, intervals, "metric")
-        return _return_forecast()
+        stored = _store_forecast_intervals(intervals)
+        if stored:
+            return stored
+        logger.error(f"[Forecast:{tag}] No current-or-future intervals after date filter")
+        if _cached_forecast:
+            return _return_forecast()
+        return []
 
     except RequestException as e:
         timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
@@ -495,6 +628,16 @@ def grab_forecast(tag="unknown"):
             logger.error(
                 f"[{timestamp}] [Forecast:{tag}] API request failed: {e}"
             )
+            try:
+                result = _fetch_forecast_via_weather_endpoint(tag)
+                if result:
+                    return result
+            except RequestException as fallback_exc:
+                logger.error(
+                    "[Forecast:%s] weather/forecast fallback failed: %s",
+                    tag,
+                    fallback_exc,
+                )
         if _cached_forecast:
             return _return_forecast()
         return []

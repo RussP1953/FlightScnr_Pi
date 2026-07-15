@@ -112,7 +112,7 @@ def display_flight_id(
 def display_flight_id_for_flight(flight: dict) -> str:
     return display_flight_id(
         flight_number=flight.get("flight_number") or flight.get("number") or "",
-        callsign=flight.get("callsign") or "",
+        callsign=flight.get("callsign") or flight.get("registration") or "",
     )
 
 

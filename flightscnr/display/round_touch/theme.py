@@ -94,10 +94,12 @@ LIVE_DIM = (28, 84, 128)
 # Parked / slow AIS vessels (dimmer than AIRCRAFT when hierarchy is on).
 VESSEL_PARKED = (120, 90, 40)
 VESSEL_MOVING = AIRCRAFT
-ALERT_MILITARY = (255, 165, 0)
-ALERT_EMERGENCY = (255, 0, 0)
-ALERT_FLASH = (255, 0, 0)
-ALERT_WATCH = (255, 220, 80)
+ALERT_MILITARY = (255, 40, 40)   # red — military tracks
+ALERT_OTHER = (56, 160, 255)     # blue — emergency squawk / watch list
+ALERT_EMERGENCY = ALERT_OTHER
+ALERT_FLASH = (255, 80, 80)      # bright red pulse (military rim / icons)
+ALERT_FLASH_OTHER = (120, 200, 255)  # bright blue pulse
+ALERT_WATCH = ALERT_OTHER
 
 SCALE_LABEL_BEARING_DEG = 245.5
 RING_COUNT = 3
