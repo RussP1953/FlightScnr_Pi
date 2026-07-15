@@ -5,7 +5,7 @@ import time
 
 import pygame
 
-from display.round_touch import aircraft, draw, geo, map_bg, scale, settings, theme
+from display.round_touch import aircraft, draw, geo, map_bg, rainviewer_overlay, scale, settings, theme
 from display.round_touch import alert_prefs
 from display.round_touch import vessel_declutter
 from utilities import aircraft_alert
@@ -378,6 +378,8 @@ def draw_radar(surface, flights, full_redraw=True, *, calibrate: bool = False):
     draw.fill_background(surface)
     map_bg.request_background()
     map_bg.draw_background(surface)
+    rainviewer_overlay.request_overlay()
+    rainviewer_overlay.draw_overlay(surface)
     _draw_grid(surface, calibrate=calibrate)
 
     if not calibrate:
@@ -439,9 +441,16 @@ def _draw_facing_calibrate_overlay(surface):
 
 
 def _draw_map_attribution(surface):
-    text = map_bg.attribution_text()
-    if not text:
+    parts = []
+    map_text = map_bg.attribution_text()
+    if map_text:
+        parts.append(map_text)
+    precip_text = rainviewer_overlay.attribution_text()
+    if precip_text:
+        parts.append(precip_text)
+    if not parts:
         return
+    text = " · ".join(parts)
     font = draw.load_font(theme.s(11))
     rendered = font.render(text, True, theme.HINT)
     y = theme.CENTER_Y + int(theme.VISIBLE_RADIUS * 0.52)

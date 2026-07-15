@@ -120,6 +120,11 @@
                 <label for="show_sweep">Show radar sweep line</label>
                 <span class="switch"><input id="show_sweep" type="checkbox"><span class="track"></span></span>
             </div>
+            <div class="chk">
+                <label for="show_precip">Show precipitation (RainViewer)</label>
+                <span class="switch"><input id="show_precip" type="checkbox"><span class="track"></span></span>
+            </div>
+            <p class="hint">Live rain/snow radar overlay via <a href="https://www.rainviewer.com/" target="_blank" rel="noopener">RainViewer</a> (free personal API, updates ~ every 5–10 min).</p>
             <label for="traffic_mode">Radar traffic</label>
             <select id="traffic_mode">
                 <option value="aircraft">Aircraft only</option>
@@ -548,6 +553,7 @@ async function loadAll() {
         $("show_compass").checked = !!r.show_compass_rose;
         $("facing_deg").value = String(Math.round(Number(r.facing_deg) || 0) % 360);
         $("show_sweep").checked = !!r.show_sweep_line;
+        $("show_precip").checked = r.show_precipitation !== false;
         $("traffic_mode").value = r.traffic_mode || (r.ais_enabled ? "both" : "aircraft");
     } catch (_) {}
 
@@ -622,6 +628,7 @@ async function saveRadar() {
                 show_compass_rose: $("show_compass").checked,
                 facing_deg: Number($("facing_deg").value),
                 show_sweep_line: $("show_sweep").checked,
+                show_precipitation: $("show_precip").checked,
                 traffic_mode: $("traffic_mode").value,
             }),
         });

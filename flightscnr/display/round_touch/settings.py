@@ -21,6 +21,7 @@ _defaults = {
     # Real-world direction at the top of the screen (0=north-up).
     "facing_deg": 0.0,
     "show_sweep": True,
+    "show_precipitation": True,
     "scale_index": 1,
     "theme_index": color_presets.DEFAULT_THEME_INDEX,
     "clock_12hr": True,
@@ -168,6 +169,7 @@ def _settings_snapshot(state: dict) -> tuple:
         state.get("show_compass_rose"),
         _normalize_facing(state.get("facing_deg", 0)),
         state.get("show_sweep"),
+        state.get("show_precipitation"),
         state.get("min_height_ft"),
         state.get("brightness_percent"),
         state.get("auto_idle_clock"),
@@ -287,6 +289,20 @@ def toggle_sweep_line():
 
 def set_show_sweep_line(enabled: bool):
     _state["show_sweep"] = bool(enabled)
+    _save(_state)
+
+
+def show_precipitation() -> bool:
+    return bool(_state.get("show_precipitation", True))
+
+
+def toggle_show_precipitation():
+    _state["show_precipitation"] = not show_precipitation()
+    _save(_state)
+
+
+def set_show_precipitation(enabled: bool):
+    _state["show_precipitation"] = bool(enabled)
     _save(_state)
 
 

@@ -221,6 +221,15 @@ def location_set():
             weather_data.refresh_for_location_change()
         except Exception:
             print("Weather refresh after location save failed")
+        try:
+            from display.round_touch import map_bg, rainviewer_overlay
+
+            map_bg.invalidate()
+            map_bg.request_background()
+            rainviewer_overlay.invalidate()
+            rainviewer_overlay.request_overlay()
+        except Exception:
+            print("Map/precip refresh after location save failed")
         return jsonify({
             "message": f"Radar center saved: {format_location_home()}",
             "location": format_location_home(),
@@ -496,6 +505,7 @@ def radar_json():
             "show_compass_rose": settings.show_compass_rose(),
             "facing_deg": settings.facing_deg(),
             "show_sweep_line": settings.show_sweep_line(),
+            "show_precipitation": settings.show_precipitation(),
             "traffic_mode": settings.traffic_mode(),
             "ais_enabled": settings.ais_enabled(),
         }
@@ -504,7 +514,7 @@ def radar_json():
 
 @app.post("/radar")
 def radar_save():
-    from display.round_touch import map_bg, scale, settings
+    from display.round_touch import map_bg, rainviewer_overlay, scale, settings
 
     data = request.get_json(silent=True) or {}
     if "distance_units" in data:
@@ -522,10 +532,12 @@ def radar_save():
         settings.set_scale_index(idx)
         scale.select(idx)
         map_bg.request_background()
+        rainviewer_overlay.request_overlay()
     elif "scale_index" in data:
         settings.set_scale_index(int(data.get("scale_index")))
         scale.select(settings.scale_index())
         map_bg.request_background()
+        rainviewer_overlay.request_overlay()
     if "min_height_ft" in data:
         settings.set_min_height_ft(int(data.get("min_height_ft")))
     if "theme_index" in data:
@@ -536,6 +548,11 @@ def radar_save():
         settings.set_facing_deg(data.get("facing_deg"))
     if "show_sweep_line" in data:
         settings.set_show_sweep_line(bool(data.get("show_sweep_line")))
+    if "show_precipitation" in data:
+        settings.set_show_precipitation(bool(data.get("show_precipitation")))
+        rainviewer_overlay.invalidate()
+        if settings.show_precipitation():
+            rainviewer_overlay.request_overlay()
     if "traffic_mode" in data:
         settings.set_traffic_mode(str(data.get("traffic_mode") or ""))
     elif "ais_enabled" in data:

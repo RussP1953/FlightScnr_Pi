@@ -186,6 +186,7 @@ def draw_info(surface, page: int, scroll_offset: int = 0, display_focus: int = 0
         units = settings.distance_units()
         rose = "on" if settings.show_compass_rose() else "off"
         sweep = "on" if settings.show_sweep_line() else "off"
+        precip = "on" if settings.show_precipitation() else "off"
         idle = "on" if settings.auto_idle_clock_enabled() else "off"
         traffic = settings.traffic_mode_label()
         facing = settings.facing_label()
@@ -199,6 +200,7 @@ def draw_info(surface, page: int, scroll_offset: int = 0, display_focus: int = 0
             f"Facing: {facing}",
             f"Min height: {settings.min_height_ft()} ft",
             f"Sweep line: {sweep}",
+            f"Precipitation: {precip}",
             f"Idle clock: {idle}",
         ]
         row_y, row_h, _ = _display_layout(scroll_offset)

@@ -23,6 +23,7 @@ from display.round_touch import (
     map_bg,
     nav,
     pinch_handler,
+    rainviewer_overlay,
     rotation,
     scale,
     settings,
@@ -146,6 +147,7 @@ class RoundTouchDisplay:
         radar._init_sweep()
         map_bg.request_background()
         map_bg.prewarm_all_scales()
+        rainviewer_overlay.request_overlay()
         self._apply_brightness()
         if settings.auto_timezone_enabled():
             try:
@@ -419,6 +421,7 @@ class RoundTouchDisplay:
             settings.cycle_scale()
             scale.select(settings.scale_index())
             map_bg.request_background()
+            rainviewer_overlay.request_overlay()
         elif row == 4:
             settings.toggle_compass_rose()
         elif row == 5:
@@ -428,6 +431,12 @@ class RoundTouchDisplay:
         elif row == 7:
             settings.toggle_sweep_line()
         elif row == 8:
+            settings.toggle_show_precipitation()
+            from display.round_touch import rainviewer_overlay
+
+            rainviewer_overlay.invalidate()
+            rainviewer_overlay.request_overlay()
+        elif row == 9:
             settings.toggle_auto_idle_clock()
 
     def _begin_facing_calibrate(self):
@@ -543,6 +552,7 @@ class RoundTouchDisplay:
         settings.set_scale_index(new_idx)
         scale.select(new_idx)
         map_bg.request_background()
+        rainviewer_overlay.request_overlay()
         self._safe_draw()
 
     def _flights_for_detail(self):
@@ -1057,6 +1067,7 @@ class RoundTouchDisplay:
         """Apply settings written by another process (e.g. web portal)."""
         scale.select(settings.scale_index())
         map_bg.request_background()
+        rainviewer_overlay.request_overlay()
         self._apply_brightness()
         try:
             from utilities.ais_client import sync_ais_client
