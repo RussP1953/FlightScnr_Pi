@@ -23,6 +23,7 @@ from display.round_touch import (
     map_bg,
     nav,
     pinch_handler,
+    position_smooth,
     rainviewer_overlay,
     rotation,
     scale,
@@ -110,6 +111,7 @@ class RoundTouchDisplay:
         self.settings_page = info.PAGE_MAIN
         self.flights = []
         self._ais_vessels: list = []
+        self._position_smoother = position_smooth.PositionSmoother()
         self._last_ais_poll = 0.0
         self.flight_index = 0
         # Stable identity for the open detail page (index alone drifts as traffic changes).
@@ -283,7 +285,7 @@ class RoundTouchDisplay:
         if self.screen == SCREEN_RADAR:
             radar.draw_radar(
                 self.surface,
-                self.flights,
+                self._radar_flights(),
                 calibrate=self._calibrating_facing,
             )
         elif self.screen == SCREEN_FLIGHT:
@@ -718,8 +720,12 @@ class RoundTouchDisplay:
 
         Thread(target=_work, daemon=True).start()
 
+    def _radar_flights(self) -> list:
+        """Flights with dead-reckoned positions for radar draw / tap hit-testing."""
+        return self._position_smoother.apply(self.flights)
+
     def _open_flight_at(self, x: int, y: int, alt_x: int | None = None, alt_y: int | None = None) -> bool:
-        picked = radar.pick_flight_at(self.flights, x, y, alt_x, alt_y)
+        picked = radar.pick_flight_at(self._radar_flights(), x, y, alt_x, alt_y)
         ordered = self._ordered_flights()
         if not picked or not ordered:
             return False
@@ -1088,6 +1094,7 @@ class RoundTouchDisplay:
                 return
             map_bg.invalidate()
             map_bg.prewarm_all_scales()
+            self._position_smoother.reset()
             self.overhead.grab_data()
 
             def _fetch_weather():
