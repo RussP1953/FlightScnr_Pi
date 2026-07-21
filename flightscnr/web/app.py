@@ -364,6 +364,7 @@ def alerts_json():
             "alert_emergency": alert_prefs.emergency_enabled(),
             "alert_hide_non_alerted": alert_prefs.hide_non_alerted(),
             "alert_watch": alert_prefs.watch_blob(),
+            "alert_watch_types": alert_prefs.watch_types_blob(),
         }
     )
 
@@ -378,6 +379,7 @@ def alerts_save():
         alert_emergency=bool(data.get("alert_emergency", False)),
         alert_hide_non_alerted=bool(data.get("alert_hide_non_alerted", False)),
         alert_watch=str(data.get("alert_watch", "") or ""),
+        alert_watch_types=str(data.get("alert_watch_types", "") or ""),
     )
     return jsonify({"ok": True})
 
@@ -603,6 +605,7 @@ def off_hours_save():
         end=data.get("end"),
         mode=data.get("mode"),
         dim_percent=data.get("dim_percent"),
+        force_clock=data.get("force_clock"),
     )
     # Apply brightness immediately from the web save path so changes take
     # effect even before the display loop's next pass.

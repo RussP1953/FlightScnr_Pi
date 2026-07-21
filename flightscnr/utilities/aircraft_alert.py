@@ -268,8 +268,45 @@ def is_emergency_squawk(flight: dict) -> bool:
 
 
 def on_watchlist(flight: dict) -> bool:
+    return on_watchlist_callsign(flight) or on_watchlist_type(flight)
+
+
+def on_watchlist_callsign(flight: dict) -> bool:
     cs = _normalize_callsign(flight.get("callsign"))
-    return cs in alert_prefs.watch_callsigns()
+    return bool(cs) and cs in alert_prefs.watch_callsigns()
+
+
+def on_watchlist_type(flight: dict) -> bool:
+    """True when flight aircraft type matches a watched type code / designation."""
+    watched = alert_prefs.watch_types()
+    if not watched:
+        return False
+    plane = str(flight.get("plane") or flight.get("aircraft_type") or "").strip()
+    if not plane or plane == "—":
+        return False
+    candidates = {alert_prefs.normalize_type_token(plane)}
+    try:
+        from utilities.icao_types import format_aircraft_type
+
+        name = format_aircraft_type(plane)
+        if name:
+            candidates.add(alert_prefs.normalize_type_token(name))
+    except ImportError:
+        pass
+    candidates.discard("")
+    if not candidates:
+        return False
+    for raw in watched:
+        token = alert_prefs.normalize_type_token(raw)
+        if len(token) < 2:
+            continue
+        for cand in candidates:
+            if cand == token or cand.startswith(token) or token.startswith(cand):
+                return True
+            # Marketing designations inside longer type names (e.g. A330743 in …A330743L).
+            if len(token) >= 4 and token in cand:
+                return True
+    return False
 
 
 def should_alert(flight: dict) -> bool:

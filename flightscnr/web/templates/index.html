@@ -194,7 +194,6 @@
             <select id="night_mode">
                 <option value="dim">Dim display</option>
                 <option value="off">Turn off display</option>
-                <option value="clock">Go to clock screen</option>
             </select>
             <div id="dim-row">
                 <label for="night_dim">Dim brightness</label>
@@ -202,13 +201,18 @@
                     <option value="3">3%</option><option value="5">5%</option>
                     <option value="10">10%</option><option value="15">15%</option><option value="20">20%</option>
                     <option value="30">30%</option><option value="40">40%</option><option value="50">50%</option>
+                    <option value="100">100% (full)</option>
                 </select>
+            </div>
+            <div class="chk">
+                <label for="night_clock">Show clock during off-hours</label>
+                <span class="switch"><input id="night_clock" type="checkbox"><span class="track"></span></span>
             </div>
             <div class="row2">
                 <div><label for="night_start">Start</label><input type="time" id="night_start"></div>
                 <div><label for="night_end">End</label><input type="time" id="night_end"></div>
             </div>
-            <p class="note">Off-hours applies automatic display dimming/off according to this schedule.</p>
+            <p class="note">Dim/off and clock can be combined — e.g. dim the display and stay on the clock screen.</p>
             <button class="btn btn-primary" id="btn-offhours" style="margin-top:.7rem" type="button">Save off-hours</button>
             <div id="offhours-status" class="status"></div>
         </div>
@@ -235,7 +239,10 @@
             <div class="chk"><label for="alert-hide">Hide non-alerted aircraft on radar</label><span class="switch"><input id="alert-hide" type="checkbox"><span class="track"></span></span></div>
             <label for="alert-watch">Watch list (callsigns)</label>
             <input id="alert-watch" type="text" autocomplete="off" placeholder="UAL123, DAL456">
-            <p class="hint">Comma-separated callsigns (3-letter airline + flight number). Highlights when a watched flight appears on radar. To clear all, delete the text in the field above and tap Save.</p>
+            <p class="hint">Comma-separated callsigns (3-letter airline + flight number). Highlights when a watched flight appears on radar.</p>
+            <label for="alert-watch-types">Watch list (aircraft types)</label>
+            <input id="alert-watch-types" type="text" autocomplete="off" placeholder="A337, B748, A330-743">
+            <p class="hint">Comma-separated ICAO type codes or designations (e.g. A337, B738, A330-743). Matches every aircraft of that type on radar. Clear either field and Save to remove those watches.</p>
             <button class="btn btn-primary" id="btn-alerts" style="margin-top:.7rem" type="button">Save alerts</button>
             <div id="alert-status" class="status"></div>
         </div>
@@ -581,10 +588,13 @@ async function loadAll() {
     try {
         const o = await jsonFetch("/off-hours/json");
         $("night_en").checked = !!o.enabled;
-        $("night_mode").value = (o.mode || "dim");
+        let mode = (o.mode || "dim");
+        if (mode === "clock") mode = "dim";
+        $("night_mode").value = mode;
         $("night_start").value = o.start || "22:00";
         $("night_end").value = o.end || "06:00";
         $("night_dim").value = String(o.dim_percent || 20);
+        if ($("night_clock")) $("night_clock").checked = !!o.force_clock || (o.mode === "clock");
         toggleDimRow();
     } catch (_) {}
 
@@ -599,6 +609,7 @@ async function loadAll() {
         $("alert-emrg").checked = !!a.alert_emergency;
         $("alert-hide").checked = !!a.alert_hide_non_alerted;
         $("alert-watch").value = a.alert_watch || "";
+        if ($("alert-watch-types")) $("alert-watch-types").value = a.alert_watch_types || "";
     } catch (_) {}
 
     try {
@@ -736,6 +747,7 @@ async function saveOffHours() {
             body: JSON.stringify({
                 enabled: $("night_en").checked,
                 mode: $("night_mode").value,
+                force_clock: $("night_clock") ? $("night_clock").checked : false,
                 start: $("night_start").value,
                 end: $("night_end").value,
                 dim_percent: Number($("night_dim").value),
@@ -772,6 +784,7 @@ async function saveAlerts() {
                 alert_emergency: $("alert-emrg").checked,
                 alert_hide_non_alerted: $("alert-hide").checked,
                 alert_watch: $("alert-watch").value.trim().toUpperCase(),
+                alert_watch_types: ($("alert-watch-types") ? $("alert-watch-types").value : "").trim().toUpperCase(),
             }),
         });
         showStatus("alert-status", "Alert settings saved.");

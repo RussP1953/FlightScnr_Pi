@@ -11,13 +11,17 @@ DATA_DIR = os.environ.get("FLIGHTSCNR_DATA_DIR", "/var/lib/flightscnr")
 ALERT_PATH = os.path.join(DATA_DIR, "alert_prefs.json")
 
 _WATCH_MAX = 16
+_TYPE_MAX = 16
 _CALLSIGN_RE = re.compile(r"^[A-Z]{3}[A-Z0-9]+$")
+# ICAO type codes (B738, A337) or marketing tokens (A330-743).
+_TYPE_RE = re.compile(r"^[A-Z0-9][A-Z0-9\-]{1,15}$")
 
 _defaults = {
     "alert_military": False,
     "alert_emergency": False,
     "alert_hide_non_alerted": False,
     "alert_watch": "",
+    "alert_watch_types": "",
 }
 
 
@@ -45,6 +49,24 @@ def _parse_watch(blob: str) -> list[str]:
     return out
 
 
+def _parse_watch_types(blob: str) -> list[str]:
+    out: list[str] = []
+    if not blob:
+        return out
+    for raw in blob.replace(";", ",").split(","):
+        token = "".join(raw.upper().split())
+        if not token or not _TYPE_RE.match(token):
+            continue
+        if token not in out and len(out) < _TYPE_MAX:
+            out.append(token)
+    return out
+
+
+def normalize_type_token(raw: str) -> str:
+    """Strip spaces/hyphens for type comparisons (A330-743 → A330743)."""
+    return re.sub(r"[^A-Z0-9]", "", (raw or "").upper())
+
+
 def _load() -> dict:
     if not os.path.exists(ALERT_PATH):
         state = dict(_defaults)
@@ -63,6 +85,7 @@ def _load() -> dict:
 
 _state = _load()
 _watch = _parse_watch(_state.get("alert_watch", ""))
+_watch_types = _parse_watch_types(_state.get("alert_watch_types", ""))
 try:
     _last_mtime: float | None = (
         os.path.getmtime(ALERT_PATH) if os.path.exists(ALERT_PATH) else None
@@ -72,7 +95,7 @@ except OSError:
 
 
 def reload():
-    global _state, _watch, _last_mtime
+    global _state, _watch, _watch_types, _last_mtime
     try:
         mtime = os.path.getmtime(ALERT_PATH) if os.path.exists(ALERT_PATH) else None
     except OSError:
@@ -82,6 +105,7 @@ def reload():
     _last_mtime = mtime
     _state = _load()
     _watch = _parse_watch(_state.get("alert_watch", ""))
+    _watch_types = _parse_watch_types(_state.get("alert_watch_types", ""))
 
 
 def military_enabled() -> bool:
@@ -100,12 +124,20 @@ def watch_callsigns() -> list[str]:
     return list(_watch)
 
 
+def watch_types() -> list[str]:
+    return list(_watch_types)
+
+
 def watch_blob() -> str:
     return _state.get("alert_watch", "") or ""
 
 
+def watch_types_blob() -> str:
+    return _state.get("alert_watch_types", "") or ""
+
+
 def alerts_active() -> bool:
-    return military_enabled() or emergency_enabled() or bool(_watch)
+    return military_enabled() or emergency_enabled() or bool(_watch) or bool(_watch_types)
 
 
 def update(
@@ -114,8 +146,9 @@ def update(
     alert_emergency: bool | None = None,
     alert_hide_non_alerted: bool | None = None,
     alert_watch: str | None = None,
+    alert_watch_types: str | None = None,
 ) -> None:
-    global _watch, _last_mtime
+    global _watch, _watch_types, _last_mtime
     if alert_military is not None:
         _state["alert_military"] = bool(alert_military)
     if alert_emergency is not None:
@@ -125,6 +158,9 @@ def update(
     if alert_watch is not None:
         _watch = _parse_watch(alert_watch)
         _state["alert_watch"] = ",".join(_watch)
+    if alert_watch_types is not None:
+        _watch_types = _parse_watch_types(alert_watch_types)
+        _state["alert_watch_types"] = ",".join(_watch_types)
     _save(_state)
     try:
         _last_mtime = os.path.getmtime(ALERT_PATH)
