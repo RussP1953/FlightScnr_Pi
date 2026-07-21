@@ -42,7 +42,9 @@ from display.round_touch.screens import (
     info,
     radar,
     tracked,
+    wifi_setup as wifi_setup_screen,
 )
+from utilities import wifi_setup as wifi_setup_util
 
 logger = logging.getLogger("flightscnr.display")
 
@@ -54,6 +56,7 @@ SCREEN_CLOCK = "clock"
 SCREEN_CLOCK_SETTINGS = "clock_settings"
 SCREEN_FORECAST = "forecast"
 SCREEN_TRACKED = "tracked"
+SCREEN_WIFI_SETUP = "wifi_setup"
 
 SECONDARY_TIMEOUT_S = 45
 BOOT_SPLASH_S = 3
@@ -118,6 +121,9 @@ class RoundTouchDisplay:
         self._selected_flight_id: str | None = None
         self._secondary_activity = time.time()
         self._boot_until = time.time() + BOOT_SPLASH_S
+        self._wifi_setup_mode = False
+        self._last_wifi_setup_poll = 0.0
+        self._wifi_setup_redraw = False
         self._last_clock_minute = -1
         self._last_clock_draw = 0.0
         self._last_radar_draw = 0
@@ -153,9 +159,27 @@ class RoundTouchDisplay:
         self._vfr_opacity_slider_active = False
 
         radar._init_sweep()
-        map_bg.request_background()
-        map_bg.prewarm_all_scales()
-        rainviewer_overlay.request_overlay()
+        try:
+            self._wifi_setup_mode = bool(wifi_setup_util.should_enter_setup_at_boot())
+        except Exception:
+            logger.exception("Wi-Fi setup probe failed")
+            self._wifi_setup_mode = False
+        if self._wifi_setup_mode:
+            self.screen = SCREEN_WIFI_SETUP
+            logger.info("Entering Wi-Fi setup hotspot mode")
+            try:
+                wifi_setup_util.clear_wifi_connected_flag()
+            except Exception:
+                pass
+            Thread(
+                target=self._ensure_wifi_setup_ap,
+                name="wifi-setup-ap",
+                daemon=True,
+            ).start()
+        else:
+            map_bg.request_background()
+            map_bg.prewarm_all_scales()
+            rainviewer_overlay.request_overlay()
         self._apply_brightness()
         if settings.auto_timezone_enabled():
             try:
@@ -167,6 +191,56 @@ class RoundTouchDisplay:
             except ImportError:
                 pass
         self._safe_draw()
+
+    def _ensure_wifi_setup_ap(self) -> None:
+        """Start the setup hotspot off the UI thread (never call pygame here)."""
+        try:
+            wifi_setup_util.ensure_setup_ap()
+        except Exception:
+            logger.exception("Failed to start Wi-Fi setup hotspot")
+        # Main loop picks this up — pygame is not thread-safe on this display.
+        self._wifi_setup_redraw = True
+
+    def _leave_wifi_setup(self) -> None:
+        """Exit QR/setup screen after home Wi-Fi is up."""
+        if self.screen != SCREEN_WIFI_SETUP and not self._wifi_setup_mode:
+            return
+        logger.info("Wi-Fi client connected — leaving setup mode")
+        try:
+            wifi_setup_util.stop_setup_ap()
+        except Exception:
+            logger.debug("Setup AP stop after connect", exc_info=True)
+        try:
+            wifi_setup_util.clear_wifi_connected_flag()
+        except Exception:
+            pass
+        self._wifi_setup_mode = False
+        self._fatal_error = None
+        map_bg.request_background()
+        map_bg.prewarm_all_scales()
+        rainviewer_overlay.request_overlay()
+        self._open_screen(SCREEN_RADAR)
+
+    def _tick_wifi_setup(self) -> None:
+        if self.screen != SCREEN_WIFI_SETUP:
+            return
+        if self._wifi_setup_redraw:
+            self._wifi_setup_redraw = False
+            self._safe_draw()
+        now = time.time()
+        if now - self._last_wifi_setup_poll < 1.0:
+            return
+        self._last_wifi_setup_poll = now
+        try:
+            connected = (
+                wifi_setup_util.wifi_connect_signaled()
+                or wifi_setup_util.active_client_wifi()
+            )
+        except Exception:
+            logger.debug("Wi-Fi setup poll failed", exc_info=True)
+            return
+        if connected:
+            self._leave_wifi_setup()
 
     def _refresh_ais_vessels(self) -> None:
         """Re-read the local AIS vessel table (WebSocket feed is separate)."""
@@ -288,7 +362,9 @@ class RoundTouchDisplay:
             self._present()
             return
 
-        if self.screen == SCREEN_RADAR:
+        if self.screen == SCREEN_WIFI_SETUP:
+            wifi_setup_screen.draw_wifi_setup(self.surface)
+        elif self.screen == SCREEN_RADAR:
             radar.draw_radar(
                 self.surface,
                 self._radar_flights(),
@@ -340,6 +416,8 @@ class RoundTouchDisplay:
     def _timeout_duration_s(self) -> float | None:
         """Active secondary-screen timeout in seconds, or None if no countdown."""
         if time.time() < self._boot_until:
+            return None
+        if self.screen == SCREEN_WIFI_SETUP:
             return None
         if self.screen in (SCREEN_RADAR, SCREEN_CLOCK, SCREEN_CLOCK_SETTINGS, SCREEN_FORECAST):
             return None
@@ -1059,6 +1137,9 @@ class RoundTouchDisplay:
     def _handle_navigation(self):
         if time.time() < self._boot_until:
             return
+        if self.screen == SCREEN_WIFI_SETUP:
+            # Captive portal owns input during first-time Wi-Fi setup.
+            return
 
         self._handle_scroll_drag()
 
@@ -1286,6 +1367,8 @@ class RoundTouchDisplay:
 
     def _tick_timeout(self):
         if time.time() < self._boot_until:
+            return
+        if self.screen == SCREEN_WIFI_SETUP:
             return
         from display.round_touch import off_hours
 
@@ -1537,11 +1620,19 @@ class RoundTouchDisplay:
                     self._last_radar_draw = time.time()
 
                 now = time.time()
-                if not self._radar_modal_active() and now - last_data_poll >= DATA_REFRESH_SECONDS:
+                if (
+                    self.screen != SCREEN_WIFI_SETUP
+                    and not self._radar_modal_active()
+                    and now - last_data_poll >= DATA_REFRESH_SECONDS
+                ):
                     self._tick_data()
                     last_data_poll = now
 
-                if not self._radar_modal_active() and now - self._last_ais_poll >= AIS_REFRESH_SECONDS:
+                if (
+                    self.screen != SCREEN_WIFI_SETUP
+                    and not self._radar_modal_active()
+                    and now - self._last_ais_poll >= AIS_REFRESH_SECONDS
+                ):
                     self._tick_ais()
                     self._last_ais_poll = now
 
@@ -1587,11 +1678,23 @@ class RoundTouchDisplay:
                     self._safe_draw()
 
                 if self._fatal_error:
+                    # Don't freeze forever during Wi-Fi setup if a draw glitch set fatal
+                    # (e.g. background thread touching pygame).
+                    if self.screen == SCREEN_WIFI_SETUP or self._wifi_setup_mode:
+                        self._tick_wifi_setup()
+                        if not self._fatal_error:
+                            continue
                     time.sleep(1.0)
                     continue
 
                 if now < self._boot_until:
                     self._safe_draw()
+                    time.sleep(0.05)
+                elif self.screen == SCREEN_WIFI_SETUP:
+                    self._tick_wifi_setup()
+                    if (now - self._last_static_draw) >= 0.5:
+                        self._safe_draw()
+                        self._last_static_draw = now
                     time.sleep(0.05)
                 elif self.screen == SCREEN_RADAR:
                     radar.tick_sweep()

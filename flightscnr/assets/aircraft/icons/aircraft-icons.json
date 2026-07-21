@@ -131,7 +131,7 @@
                     "E35L", "E50P", "E55P", "E545", "E550",
                     "LJ23", "LJ24", "LJ25", "LJ31", "LJ35", "LJ40", "LJ45", "LJ55", "LJ60", "LJ70", "LJ75",
                     "H25A", "H25B", "H25C", "HA4T", "HDJT",
-                    "BE40", "BE4W", "PRM1", "PC24", "EA50", "EVOT","GA6C"],
+                    "BE40", "BE4W", "PRM1", "PC24", "EA50", "EVOT","GA6C","C25C"],
 
     "turboprop": ["AT43", "AT45", "AT72", "AT73", "AT75", "AT76",
                  "DH8A", "DH8B", "DH8C", "DH8D", "DHC8",

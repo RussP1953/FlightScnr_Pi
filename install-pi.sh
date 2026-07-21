@@ -395,6 +395,7 @@ install_systemd_service() {
     local runtime_dir="/run/user/${REPO_OWNER_UID}"
 
     log_step "Installing systemd service (persists across reboot)"
+    mkdir -p /etc/NetworkManager/dnsmasq-shared.d
     sed \
         -e "s|__REPO_DIR__|$REPO_ROOT|g" \
         -e "s|__XAUTHORITY__|$xauthority|g" \

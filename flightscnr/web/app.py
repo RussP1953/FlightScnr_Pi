@@ -1,5 +1,5 @@
 #!/usr/bin/python3
-from flask import Flask, render_template, jsonify, send_from_directory, request
+from flask import Flask, render_template, jsonify, send_from_directory, request, redirect
 import json
 import os
 import sys
@@ -145,8 +145,77 @@ def favicon():
     return send_from_directory(os.path.join(WEB_DIR, "static"), "favicon.ico", mimetype="image/x-icon")
 
 
+def _wifi_portal_active() -> bool:
+    try:
+        from utilities import wifi_setup
+
+        return wifi_setup.setup_mode_active() or wifi_setup.needs_wifi_setup()
+    except Exception:
+        return False
+
+
+# Phone OS captive-portal probes are covered by the blanket redirect below.
+
+
+@app.before_request
+def _captive_wifi_gateway():
+    if not _wifi_portal_active():
+        return None
+    path = request.path or "/"
+    if path.startswith("/wifi") or path.startswith("/static") or path == "/favicon.ico":
+        return None
+    if request.method in ("GET", "HEAD"):
+        return redirect("/wifi")
+    return None
+
+
+@app.get("/wifi")
+def wifi_setup_page():
+    return render_template("wifi_setup.html")
+
+
+@app.get("/wifi/status.json")
+def wifi_status_json():
+    from utilities import wifi_setup
+
+    creds = wifi_setup.get_ap_credentials()
+    return jsonify(
+        {
+            "setup_active": wifi_setup.setup_mode_active(),
+            "needs_setup": wifi_setup.needs_wifi_setup(),
+            "client_connected": wifi_setup.active_client_wifi(),
+            "ap_ssid": creds.ssid,
+            "portal_url": creds.portal_url,
+            "status": wifi_setup.status_message(),
+            "error": wifi_setup.last_error(),
+        }
+    )
+
+
+@app.get("/wifi/networks.json")
+def wifi_networks_json():
+    from utilities import wifi_setup
+
+    rescan = str(request.args.get("rescan", "1")).lower() not in ("0", "false", "no")
+    return jsonify({"networks": wifi_setup.list_wifi_networks(rescan=rescan)})
+
+
+@app.post("/wifi/connect")
+def wifi_connect():
+    from utilities import wifi_setup
+
+    data = request.get_json(silent=True) or {}
+    ssid = str(data.get("ssid") or "").strip()
+    password = str(data.get("password") or "")
+    ok, message = wifi_setup.connect_to_wifi(ssid, password)
+    code = 200 if ok else 400
+    return jsonify({"ok": ok, "message": message}), code
+
+
 @app.get("/")
 def index():
+    if _wifi_portal_active():
+        return redirect("/wifi")
     return render_template("index.html")
 
 

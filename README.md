@@ -31,6 +31,7 @@ The UI is designed for a **4in round LCD with touch** (default layout: **720x720
 | **Clock settings**            | Swipe left from clock                       | Clock format and related options on-device                                                              |
 | **About / details**           | Swipe up from radar                         | Version, network, API status, portal URL                                                                |
 | **Settings**                  | Swipe left from radar                       | Brightness, timeouts, color theme, facing direction, display options (multi-page)                       |
+| **Wi-Fi setup**               | Automatic when offline                      | QR code to join the FlightScnr setup hotspot, then finish on your phone                                 |
 
 
 **Gestures and controls**
@@ -191,8 +192,8 @@ API responses are **cached** (e.g. FR24 feed ~90s, flight details ~30 min, weath
 
 1. Download **Raspberry Pi OS (64-bit)** with desktop from [raspberrypi.com/software](https://www.raspberrypi.com/software/).
 2. Flash to the microSD card with [Raspberry Pi Imager](https://www.raspberrypi.com/software/).
-3. In Imager **OS customisation** (recommended): set hostname, enable SSH, configure Wi‑Fi, and set your locale/time zone.
-4. Insert the card and boot once without the display attached to confirm the Pi boots and you are able to ping it.
+3. In Imager **OS customisation** (recommended for first install): set hostname, enable SSH, set locale/time zone, and optionally configure Wi‑Fi so the Pi can download packages during install. You can also use Ethernet for the install step.
+4. Insert the card and boot. Confirm you can reach the Pi (SSH or desktop) before mounting the display.
 
 
 
@@ -245,7 +246,22 @@ sudo bash install-pi.sh
 
 This installs system packages, creates `flightscnr-venv/`, downloads UI assets (fonts, weather icons, aircraft icons), extracts airline logos from `logo.zip`, creates `config.h` from `config.h.example`, creates `/var/lib/flightscnr/`, writes `/etc/flightscnr.env`, and registers the `flightscnr` systemd service.
 
-#### 5. Verify
+#### 5. First-time Wi‑Fi setup (QR + captive portal)
+
+FlightScnr can bring up its own setup hotspot when the Pi has **no Ethernet** and **no usable client Wi‑Fi** (no saved profiles, or a saved SSID that never connects — e.g. you moved the Pi to a new network). The round display shows a **FlightScnr Pi** QR screen.
+
+1. On the display, scan the QR code with your phone (or join the `FlightScnr-Setup-XXXX` network and enter the on-screen password).
+2. Your phone should open the captive portal automatically; if not, go to `http://10.42.0.1/wifi` (NetworkManager’s default hotspot gateway).
+3. Pick your home Wi‑Fi, enter the password, and tap **Connect**.
+4. The setup hotspot turns off and the display leaves the QR screen for the normal radar UI.
+
+**Notes**
+
+- Installing FlightScnr the first time still needs network access (apt / pip / git) — use Imager Wi‑Fi or Ethernet for `install-pi.sh`, then use the QR flow later if you change networks.
+- To force the QR screen for testing: add `FLIGHTSCNR_FORCE_WIFI_SETUP=1` to `/etc/flightscnr.env` and restart (`sudo systemctl restart flightscnr`). Remove that line when finished.
+- To skip setup entirely: `FLIGHTSCNR_SKIP_WIFI_SETUP=1`.
+
+#### 6. Verify
 
 
 | Check                  | How                                                            |
@@ -254,6 +270,7 @@ This installs system packages, creates `flightscnr-venv/`, downloads UI assets (
 | Touch                  | Tap an aircraft → flight detail; swipe down → clock            |
 | Pinch zoom             | Two-finger pinch on radar changes range                        |
 | Web portal             | Open `http://raspberrypi.local` from another device on the LAN |
+| Wi‑Fi setup (optional) | With no client Wi‑Fi, display shows QR; phone joins and configures home network |
 | Logs                   | `sudo journalctl -u flightscnr -f`                             |
 
 
@@ -269,7 +286,7 @@ Current builds also fall back to the mouse path automatically when no `FINGER*` 
 
 
 
-#### 6. Configure
+#### 7. Configure
 
 **Easiest:** open the web portal → **API Keys** → enter `FR24_API_KEY` and `TOMORROW_API_KEY` → **Save & restart**.
 

@@ -4,8 +4,8 @@ Documentation=https://github.com/yashmulgaonkar/FlightScnr_Pi
 # Start after networking and the display manager (X11 on :0).
 # WantedBy=graphical.target below registers this unit for boot without creating
 # an ordering cycle (do not also add After=graphical.target).
-After=network-online.target display-manager.service
-Wants=network-online.target
+After=NetworkManager.service display-manager.service
+Wants=NetworkManager.service
 
 [Service]
 Type=simple
