@@ -226,9 +226,9 @@ def _draw_vessel_tag(surface, x, y, flight):
     if vessel_declutter.short_tags_enabled():
         name = vessel_declutter.truncate_name(name, 14)
         font = draw.load_font(theme.FONT_TAG, bold=True)
-        color = theme.GRID
+        color = _overlay_color_for_basemap(theme.GRID)
         if vessel_declutter.hierarchy_enabled() and vessel_declutter.is_parked(flight):
-            color = theme.HINT
+            color = _overlay_color_for_basemap(theme.HINT)
         rendered = font.render(name, True, color)
         tag_on_right = x < theme.CENTER_X
         symbol_half = theme.AIRCRAFT_ICON_RADIUS
@@ -270,9 +270,9 @@ def _draw_vessel_tag(surface, x, y, flight):
         )
         align = "right"
     lines = [
-        (name, theme.GRID, main_font, offsets[0]),
-        (plane_type, theme.TAG_TYPE, sub_font, offsets[1]),
-        (alt, theme.TAG_ALT_ASCEND, sub_font, offsets[2]),
+        (name, _overlay_color_for_basemap(theme.GRID), main_font, offsets[0]),
+        (plane_type, _overlay_color_for_basemap(theme.TAG_TYPE), sub_font, offsets[1]),
+        (alt, _overlay_color_for_basemap(theme.TAG_ALT_ASCEND), sub_font, offsets[2]),
     ]
     for text, color, font, row_y in lines:
         if not text:
@@ -313,9 +313,9 @@ def _draw_aircraft_tag(surface, x, y, flight):
         align = "right"
 
     lines = [
-        (callsign, theme.GRID, main_font, offsets[0]),
-        (plane_type, theme.TAG_TYPE, sub_font, offsets[1]),
-        (alt, alt_color, sub_font, offsets[2]),
+        (callsign, _overlay_color_for_basemap(theme.GRID), main_font, offsets[0]),
+        (plane_type, _overlay_color_for_basemap(theme.TAG_TYPE), sub_font, offsets[1]),
+        (alt, _overlay_color_for_basemap(alt_color), sub_font, offsets[2]),
     ]
     for i, (text, color, font, row_y) in enumerate(lines):
         if not text or text == "—" and i == 1:
@@ -351,19 +351,47 @@ def _is_tracked(flight) -> bool:
     return cs == tracked or cs.startswith(tracked)
 
 
+def _light_basemap() -> bool:
+    """Pale street / VFR charts need darker aircraft icons for contrast."""
+    try:
+        return settings.map_style() in ("light", "vfr")
+    except Exception:
+        return False
+
+
+def _overlay_color_for_basemap(color: tuple) -> tuple:
+    """Darken bright overlay colors on light/VFR maps for contrast."""
+    r, g, b = int(color[0]), int(color[1]), int(color[2])
+    if not _light_basemap():
+        return (r, g, b)
+    lum = 0.299 * r + 0.587 * g + 0.114 * b
+    if lum < 90:
+        # Already-dark greens (callsign GRID): push a bit darker still.
+        return (
+            max(8, int(r * 0.65)),
+            max(8, int(g * 0.65)),
+            max(8, int(b * 0.65)),
+        )
+    return (
+        max(12, int(r * 0.38)),
+        max(12, int(g * 0.38)),
+        max(12, int(b * 0.38)),
+    )
+
+
 def _flight_icon_color(flight, *, compact: bool):
     if _is_tracked(flight) and not compact:
-        return theme.SWEEP
+        return _overlay_color_for_basemap(theme.SWEEP)
     if aircraft_alert.is_highlighted(flight):
         # Pulse between alert color (red/blue) and normal aircraft yellow.
         if aircraft_alert.pulse_phase():
-            return aircraft_alert.alert_pulse_color(flight)
-        return aircraft_alert.alert_color(flight)
+            return _overlay_color_for_basemap(aircraft_alert.alert_pulse_color(flight))
+        return _overlay_color_for_basemap(aircraft_alert.alert_color(flight))
     if vessel_declutter.is_vessel(flight) and vessel_declutter.hierarchy_enabled():
         if vessel_declutter.is_parked(flight):
-            return theme.VESSEL_PARKED
-        return theme.VESSEL_MOVING
-    return theme.AIRCRAFT
+            return _overlay_color_for_basemap(theme.VESSEL_PARKED)
+        return _overlay_color_for_basemap(theme.VESSEL_MOVING)
+    return _overlay_color_for_basemap(theme.AIRCRAFT)
 
 
 def _draw_flights(surface, flights):

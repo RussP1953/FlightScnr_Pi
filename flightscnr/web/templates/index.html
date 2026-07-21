@@ -109,6 +109,13 @@
             </select>
             <label for="radar_theme">Color theme</label>
             <select id="radar_theme"></select>
+            <label for="map_style">Map style</label>
+            <select id="map_style">
+                <option value="dark">Dark (CARTO)</option>
+                <option value="light">Light (CARTO)</option>
+                <option value="vfr">VFR sectional (FAA)</option>
+            </select>
+            <p class="hint">VFR sectionals are free public-domain FAA charts (US coverage). Outside the US, use dark or light.</p>
             <div class="chk">
                 <label for="show_compass">Show compass rose</label>
                 <span class="switch"><input id="show_compass" type="checkbox"><span class="track"></span></span>
@@ -549,6 +556,7 @@ async function loadAll() {
             theme.appendChild(el);
         });
         $("radar_theme").value = String(r.theme_index || 0);
+        if ($("map_style")) $("map_style").value = r.map_style || "dark";
         $("show_compass").checked = !!r.show_compass_rose;
         $("facing_deg").value = String(Math.round(Number(r.facing_deg) || 0) % 360);
         $("show_sweep").checked = !!r.show_sweep_line;
@@ -634,6 +642,7 @@ async function saveRadar() {
                 facing_deg: Number($("facing_deg").value),
                 show_sweep_line: $("show_sweep").checked,
                 show_precipitation: $("show_precip").checked,
+                map_style: $("map_style").value,
                 traffic_mode: $("traffic_mode").value,
             }),
         });
@@ -678,6 +687,7 @@ async function saveAndReloadSettings() {
                 facing_deg: Number($("facing_deg").value),
                 show_sweep_line: $("show_sweep").checked,
                 show_precipitation: $("show_precip").checked,
+                map_style: $("map_style").value,
                 traffic_mode: $("traffic_mode").value,
             }),
         });

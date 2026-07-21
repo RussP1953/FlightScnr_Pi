@@ -47,6 +47,7 @@ OPTIONS_ACTIONS = (
     "min_height",
     "sweep",
     "precipitation",
+    "map_style",
     "idle_clock",
 )
 
@@ -352,6 +353,7 @@ def _options_row_labels() -> list[str]:
         f"Min height: {settings.min_height_ft()} ft",
         f"Sweep line: {sweep}",
         f"Precipitation: {precip}",
+        f"Map: {settings.map_style_label()}",
         f"Idle clock: {idle}",
     ]
 

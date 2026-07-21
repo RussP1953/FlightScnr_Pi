@@ -1,8 +1,10 @@
 """Cached map background for the radar screen.
 
-Providers (RADAR_MAP_PROVIDER, no API key):
-  carto — CARTO Dark Matter, no labels (default)
-  osm   — standard OpenStreetMap raster tiles
+Styles (settings map_style, fallback RADAR_MAP_PROVIDER):
+  dark — CARTO Dark Matter, no labels (default)
+  light — CARTO Positron light, no labels
+  vfr  — FAA VFR sectional charts (US coverage, public domain)
+  osm  — OpenStreetMap tiles remapped to dark radar palette (legacy env)
 """
 
 from __future__ import annotations
@@ -29,20 +31,47 @@ MANIFEST_PATH = os.path.join(CACHE_DIR, "manifest.json")
 
 TILE_SIZE = 256
 EARTH_RADIUS_M = 6378137.0
+
+# UI-facing styles (Options / portal cycle). Legacy "osm" remains via env.
+MAP_STYLES = ("dark", "light", "vfr")
+
 OSM_TILE_URL = "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
 CARTO_SUBDOMAINS = "abcd"
-CARTO_STYLE = "dark_nolabels"
 CARTO_TILE_URL = "https://{sub}.basemaps.cartocdn.com/{style}/{z}/{x}/{y}.png"
+# ArcGIS MapServer tiles use {z}/{y}/{x} (row/col), not OSM {z}/{x}/{y}.
+VFR_TILE_URL = (
+    "https://tiles.arcgis.com/tiles/ssFJjBXIUyZDrSYZ/arcgis/rest/services/"
+    "VFR_Sectional/MapServer/tile/{z}/{y}/{x}"
+)
+VFR_ZOOM_MIN = 8
+VFR_ZOOM_MAX = 12
+
 USER_AGENT = "FlightScnrPi/1.0"
 OSM_TILE_DELAY_S = 0.55  # OSM tile usage policy: max ~2 requests/second
 CARTO_TILE_WORKERS = 4
 OSM_TILE_WORKERS = 2
+VFR_TILE_WORKERS = 4
 CACHE_TTL_S = 7 * 24 * 3600
-CACHE_STYLE_VERSION = 11  # bump when map tint/placement changes to invalidate old caches
+CACHE_STYLE_VERSION = 13  # bump when map tint/placement/styles change
 
 _lock = threading.Lock()
 _surfaces: dict[tuple, pygame.Surface] = {}
 _fetch_threads: dict[tuple, threading.Thread] = {}
+
+
+def normalize_map_style(raw: str | None) -> str:
+    """Map UI / env aliases to a canonical style id."""
+    provider = (raw or "dark").strip().lower() or "dark"
+    if provider in ("dark", "carto", "cartodb", "carto_dark", "dark_matter"):
+        return "dark"
+    if provider in ("light", "carto_light", "positron"):
+        return "light"
+    if provider in ("vfr", "sectional", "faa", "faa_vfr"):
+        return "vfr"
+    if provider in ("osm", "openstreetmap"):
+        return "osm"
+    logger.warning("Unknown map style %r — using dark", raw)
+    return "dark"
 
 
 def _enabled() -> bool:
@@ -50,32 +79,46 @@ def _enabled() -> bool:
     return raw in ("1", "true", "yes", "on")
 
 
-def _provider() -> str:
-    return os.environ.get("RADAR_MAP_PROVIDER", "carto").strip().lower() or "carto"
+def _env_map_style() -> str:
+    return normalize_map_style(os.environ.get("RADAR_MAP_PROVIDER", "dark"))
+
+
+def _resolved_style() -> str:
+    """Settings map_style first; env RADAR_MAP_PROVIDER as fallback."""
+    try:
+        from display.round_touch import settings
+
+        return normalize_map_style(settings.map_style())
+    except Exception:
+        return _env_map_style()
 
 
 def _resolved_provider() -> str:
-    """Normalize provider name to carto or osm."""
-    provider = _provider()
-    if provider in ("carto", "cartodb", "carto_dark", "dark_matter"):
-        return "carto"
-    if provider in ("osm", "openstreetmap"):
-        return "osm"
-    logger.warning("Unknown RADAR_MAP_PROVIDER=%r — using CARTO dark_nolabels", provider)
-    return "carto"
+    """Backward-compatible alias used by older call sites / logs."""
+    return _resolved_style()
 
 
 def _tile_url(z: int, x: int, y: int) -> str:
-    if _resolved_provider() == "carto":
+    style = _resolved_style()
+    if style == "dark":
         sub = CARTO_SUBDOMAINS[(x + y) % len(CARTO_SUBDOMAINS)]
-        return CARTO_TILE_URL.format(sub=sub, style=CARTO_STYLE, z=z, x=x, y=y)
+        return CARTO_TILE_URL.format(sub=sub, style="dark_nolabels", z=z, x=x, y=y)
+    if style == "light":
+        sub = CARTO_SUBDOMAINS[(x + y) % len(CARTO_SUBDOMAINS)]
+        return CARTO_TILE_URL.format(sub=sub, style="light_nolabels", z=z, x=x, y=y)
+    if style == "vfr":
+        # FAA ArcGIS: level / row / col
+        return VFR_TILE_URL.format(z=z, y=y, x=x)
     return OSM_TILE_URL.format(z=z, x=x, y=y)
 
 
 def _tile_workers() -> int:
-    if _resolved_provider() == "carto":
-        return CARTO_TILE_WORKERS
-    return OSM_TILE_WORKERS
+    style = _resolved_style()
+    if style == "osm":
+        return OSM_TILE_WORKERS
+    if style == "vfr":
+        return VFR_TILE_WORKERS
+    return CARTO_TILE_WORKERS
 
 
 def _cache_key() -> tuple | None:
@@ -93,13 +136,13 @@ def _cache_key_for_scale(scale_index: int) -> tuple | None:
         round(LOCATION_HOME[0], 5),
         round(LOCATION_HOME[1], 5),
         scale_index,
-        _provider(),
+        _resolved_style(),
     )
 
 
 def _cache_path_for_key(key: tuple) -> str:
-    lat, lon, scale_idx, provider = key
-    return os.path.join(CACHE_DIR, f"bg_{provider}_{lat}_{lon}_{scale_idx}.png")
+    lat, lon, scale_idx, style = key
+    return os.path.join(CACHE_DIR, f"bg_{style}_{lat}_{lon}_{scale_idx}.png")
 
 
 def _manifest_path_for_key(key: tuple) -> str:
@@ -115,9 +158,14 @@ def _meters_per_pixel(lat_deg: float, zoom: int) -> float:
 def _zoom_for_scale(home_lat: float, px_per_km: float) -> int:
     """Pick the zoom level whose ground resolution best matches the radar scale."""
     target_km_per_px = 1.0 / px_per_km
-    best_z = 11
+    style = _resolved_style()
+    if style == "vfr":
+        z_min, z_max = VFR_ZOOM_MIN, VFR_ZOOM_MAX
+    else:
+        z_min, z_max = 9, 17
+    best_z = min(max(11, z_min), z_max)
     best_err = float("inf")
-    for z in range(9, 18):
+    for z in range(z_min, z_max + 1):
         km_per_px = _meters_per_pixel(home_lat, z) / 1000.0
         err = abs(km_per_px - target_km_per_px)
         if err < best_err:
@@ -171,17 +219,18 @@ def _fetch_tile_coords(
     zoom: int,
     coords: list[tuple[int, int]],
 ) -> dict[tuple[int, int], pygame.Surface]:
-    """Download tiles in parallel (CARTO subdomains tolerate concurrent requests)."""
+    """Download tiles in parallel (CARTO/FAA tolerate concurrent requests)."""
     if not coords:
         return {}
 
     workers = min(_tile_workers(), len(coords))
     results: dict[tuple[int, int], pygame.Surface] = {}
+    style = _resolved_style()
 
     def _download(tx: int, ty: int) -> tuple[int, int, pygame.Surface | None]:
         session = requests.Session()
         session.headers["User-Agent"] = USER_AGENT
-        if _resolved_provider() == "osm":
+        if style == "osm":
             time.sleep(OSM_TILE_DELAY_S)
         return tx, ty, _fetch_tile(zoom, tx, ty, session)
 
@@ -235,6 +284,56 @@ def _style_carto(surface: pygame.Surface) -> pygame.Surface:
     return surface.convert()
 
 
+def _style_light(surface: pygame.Surface) -> pygame.Surface:
+    """Mild contrast on CARTO light tiles — keep readable under radar chrome."""
+    try:
+        from PIL import Image, ImageEnhance
+    except ImportError:
+        Image = None
+
+    if Image is not None:
+        tobytes = getattr(pygame.image, "tobytes", pygame.image.tostring)
+        img = Image.frombytes("RGB", surface.get_size(), tobytes(surface, "RGB"))
+        img = ImageEnhance.Contrast(img).enhance(1.08)
+        img = ImageEnhance.Brightness(img).enhance(0.92)
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        buf.seek(0)
+        return pygame.image.load(buf).convert()
+
+    return surface.convert()
+
+
+def _style_vfr(surface: pygame.Surface) -> pygame.Surface:
+    """Wash out FAA sectionals so callsigns/radar chrome stay readable."""
+    try:
+        from PIL import Image, ImageEnhance
+    except ImportError:
+        Image = None
+
+    if Image is not None:
+        tobytes = getattr(pygame.image, "tobytes", pygame.image.tostring)
+        img = Image.frombytes("RGB", surface.get_size(), tobytes(surface, "RGB"))
+        # Pull saturation down — chart yellows/magentas fight aircraft labels.
+        img = ImageEnhance.Color(img).enhance(0.55)
+        img = ImageEnhance.Contrast(img).enhance(0.85)
+        img = ImageEnhance.Brightness(img).enhance(1.12)
+        # Pale wash toward near-white (not theme.BG green — that muddies the chart).
+        wash = Image.new("RGB", img.size, (236, 238, 232))
+        img = Image.blend(img, wash, alpha=0.38)
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        buf.seek(0)
+        return pygame.image.load(buf).convert()
+
+    # Fallback without PIL: multiply toward white.
+    pale = surface.copy().convert()
+    shade = pygame.Surface(pale.get_size())
+    shade.fill((220, 222, 216))
+    pale.blit(shade, (0, 0), special_flags=pygame.BLEND_RGB_ADD)
+    return pale
+
+
 def _style_osm(surface: pygame.Surface) -> pygame.Surface:
     """Render standard OSM tiles as dark mode — dark land/water, visible roads."""
     try:
@@ -277,8 +376,13 @@ def _style_osm(surface: pygame.Surface) -> pygame.Surface:
 
 
 def _style_for_radar(surface: pygame.Surface) -> pygame.Surface:
-    if _resolved_provider() == "carto":
+    style = _resolved_style()
+    if style == "dark":
         return _style_carto(surface)
+    if style == "light":
+        return _style_light(surface)
+    if style == "vfr":
+        return _style_vfr(surface)
     return _style_osm(surface)
 
 
@@ -304,7 +408,7 @@ def _build_background(scale_index: int) -> pygame.Surface | None:
     if scale_index < 0 or scale_index >= len(scale.SCALE_BANDS):
         return None
 
-    provider = _resolved_provider()
+    provider = _resolved_style()
     home_lat, home_lon = LOCATION_HOME[0], LOCATION_HOME[1]
     outer_km = scale.SCALE_BANDS[scale_index]["label_km"]
     px_per_km = theme.GRID_OUTER_RADIUS / outer_km
@@ -367,6 +471,7 @@ def _save_cache(surface: pygame.Surface, key: tuple):
         "home_lon": key[1],
         "scale_index": key[2],
         "provider": key[3],
+        "map_style": key[3],
         "fetched_at": int(time.time()),
         "style_version": CACHE_STYLE_VERSION,
         "path": os.path.basename(path),
@@ -570,6 +675,9 @@ def draw_background(surface: pygame.Surface, pan_offset: tuple[int, int] | None 
 def attribution_text() -> str | None:
     if not _enabled() or get_background() is None:
         return None
-    if _resolved_provider() == "carto":
-        return "© OSM © CARTO"
-    return "© OpenStreetMap"
+    style = _resolved_style()
+    if style == "vfr":
+        return "© FAA"
+    if style == "osm":
+        return "© OpenStreetMap"
+    return "© OSM © CARTO"

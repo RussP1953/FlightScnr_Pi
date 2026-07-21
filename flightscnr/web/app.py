@@ -525,6 +525,8 @@ def radar_json():
             "show_precipitation": settings.show_precipitation(),
             "traffic_mode": settings.traffic_mode(),
             "ais_enabled": settings.ais_enabled(),
+            "map_style": settings.map_style(),
+            "map_style_options": list(settings.MAP_STYLES),
         }
     )
 
@@ -570,10 +572,13 @@ def radar_save():
         rainviewer_overlay.invalidate()
         if settings.show_precipitation():
             rainviewer_overlay.request_overlay()
+    if "map_style" in data:
+        settings.set_map_style(str(data.get("map_style") or ""))
     if "traffic_mode" in data:
         settings.set_traffic_mode(str(data.get("traffic_mode") or ""))
     elif "ais_enabled" in data:
         settings.set_ais_enabled(bool(data.get("ais_enabled")))
+    settings.request_reload()
     return jsonify({"ok": True, "message": "Radar settings saved."})
 
 

@@ -16,6 +16,7 @@ _disk_synced = True
 
 MIN_HEIGHT_OPTIONS = (0, 500, 1000, 1500)
 TRAFFIC_MODES = ("aircraft", "marine", "both")
+MAP_STYLES = ("dark", "light", "vfr")
 
 # Waveshare DSI panels stay lit near ~3% (raw ~8/255); 10% was needlessly bright at night.
 BRIGHTNESS_MIN_PERCENT = 3
@@ -48,6 +49,8 @@ _defaults = {
     "traffic_mode": "aircraft",
     # Kept in sync with traffic_mode for older readers / portal payloads
     "ais_enabled": False,
+    # dark | light | vfr — radar basemap (see map_bg)
+    "map_style": "dark",
 }
 
 # Live preview while calibrating facing (not persisted until save).
@@ -86,11 +89,14 @@ def _seed_from_env(state: dict) -> None:
     """First-run defaults from /etc/flightscnr.env (not applied after settings are saved)."""
     try:
         from config import DISTANCE_UNITS, MIN_HEIGHT, SEARCH_RADIUS_NM
-        from display.round_touch import scale
+        from display.round_touch import map_bg, scale
 
         state["distance_units"] = "mi" if DISTANCE_UNITS.strip().lower() == "imperial" else "km"
         state["scale_index"] = scale.index_for_radius_nm(SEARCH_RADIUS_NM)
         state["min_height_ft"] = _snap_min_height(MIN_HEIGHT)
+        env_style = map_bg.normalize_map_style(os.environ.get("RADAR_MAP_PROVIDER", "dark"))
+        # UI only cycles dark/light/vfr; map legacy osm to dark for first-run seed.
+        state["map_style"] = env_style if env_style in MAP_STYLES else "dark"
     except ImportError:
         pass
 
@@ -163,6 +169,18 @@ def _load():
         migrated = True
     state["ais_enabled"] = state["traffic_mode"] in ("marine", "both")
     state["facing_deg"] = _normalize_facing(state.get("facing_deg", 0))
+    if "map_style" not in data:
+        try:
+            from display.round_touch import map_bg
+
+            env_style = map_bg.normalize_map_style(os.environ.get("RADAR_MAP_PROVIDER", "dark"))
+            state["map_style"] = env_style if env_style in MAP_STYLES else "dark"
+        except ImportError:
+            state["map_style"] = "dark"
+        migrated = True
+    else:
+        raw = str(state.get("map_style") or "dark").strip().lower()
+        state["map_style"] = raw if raw in MAP_STYLES else "dark"
     if color_presets.migrate_theme_index(state):
         migrated = True
     if migrated:
@@ -198,6 +216,7 @@ def _settings_snapshot(state: dict) -> tuple:
         state.get("auto_timezone"),
         state.get("traffic_mode"),
         state.get("ais_enabled"),
+        state.get("map_style"),
     )
 
 
@@ -360,6 +379,43 @@ def toggle_show_precipitation():
 def set_show_precipitation(enabled: bool):
     _state["show_precipitation"] = bool(enabled)
     _save(_state)
+
+
+def map_style() -> str:
+    raw = str(_state.get("map_style") or "dark").strip().lower()
+    return raw if raw in MAP_STYLES else "dark"
+
+
+def map_style_label() -> str:
+    labels = {"dark": "dark", "light": "light", "vfr": "VFR"}
+    return labels.get(map_style(), "dark")
+
+
+def set_map_style(value: str) -> str:
+    from display.round_touch import map_bg
+
+    try:
+        style = map_bg.normalize_map_style(value)
+    except Exception:
+        style = str(value or "dark").strip().lower()
+    if style not in MAP_STYLES:
+        style = "dark"
+    if style == map_style():
+        return style
+    _state["map_style"] = style
+    _save(_state)
+    try:
+        map_bg.invalidate()
+        map_bg.prewarm_all_scales()
+    except Exception:
+        logger.debug("Map style invalidate/prewarm failed", exc_info=True)
+    return style
+
+
+def cycle_map_style() -> str:
+    cur = map_style()
+    idx = MAP_STYLES.index(cur) if cur in MAP_STYLES else 0
+    return set_map_style(MAP_STYLES[(idx + 1) % len(MAP_STYLES)])
 
 
 def traffic_mode() -> str:

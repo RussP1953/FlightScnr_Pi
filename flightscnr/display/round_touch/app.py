@@ -483,6 +483,8 @@ class RoundTouchDisplay:
 
             rainviewer_overlay.invalidate()
             rainviewer_overlay.request_overlay()
+        elif action == "map_style":
+            settings.cycle_map_style()
         elif action == "idle_clock":
             settings.toggle_auto_idle_clock()
 
@@ -1311,7 +1313,9 @@ class RoundTouchDisplay:
     def _apply_reloaded_settings(self):
         """Apply settings written by another process (e.g. web portal)."""
         scale.select(settings.scale_index())
+        map_bg.invalidate()
         map_bg.request_background()
+        map_bg.prewarm_all_scales()
         rainviewer_overlay.request_overlay()
         self._apply_brightness()
         try:
