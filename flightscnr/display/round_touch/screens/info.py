@@ -456,9 +456,16 @@ def draw_info(surface, page: int, scroll_offset: int = 0, display_focus: int = 0
     max_scroll = 0
 
     if page == PAGE_MAIN:
+        try:
+            from utilities.system_stats import format_lines as _system_stat_lines
+
+            sys_lines = _system_stat_lines()
+        except Exception:
+            sys_lines = ["CPU: —", "RAM: —", "Temp: —"]
         lines = [
             f"IP: {_local_ip()}",
             f"Host: {_hostname()}.local",
+            *sys_lines,
             f"Lat: {LOCATION_HOME[0]:.5f}",
             f"Lon: {LOCATION_HOME[1]:.5f}",
             f"Min height: {settings.min_height_ft()} ft",
