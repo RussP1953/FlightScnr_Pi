@@ -11,9 +11,19 @@ DATA_DIR = os.environ.get("FLIGHTSCNR_DATA_DIR", "/var/lib/flightscnr")
 SETTINGS_PATH = os.path.join(DATA_DIR, "round_touch_settings.json")
 RELOAD_REQUEST_PATH = os.path.join(DATA_DIR, "round_touch_settings.reload")
 _settings_mtime: float | None = None
+# True when _state matches disk. Slider drags set this False until persist.
+_disk_synced = True
 
 MIN_HEIGHT_OPTIONS = (0, 500, 1000, 1500)
 TRAFFIC_MODES = ("aircraft", "marine", "both")
+
+# Waveshare DSI panels stay lit near ~3% (raw ~8/255); 10% was needlessly bright at night.
+BRIGHTNESS_MIN_PERCENT = 3
+BRIGHTNESS_MAX_PERCENT = 100
+
+
+def clamp_brightness_percent(value: int) -> int:
+    return max(BRIGHTNESS_MIN_PERCENT, min(BRIGHTNESS_MAX_PERCENT, int(value)))
 
 _defaults = {
     "brightness_percent": 100,
@@ -86,7 +96,7 @@ def _seed_from_env(state: dict) -> None:
 
 
 def _save(data):
-    global _settings_mtime
+    global _settings_mtime, _disk_synced
     try:
         os.makedirs(DATA_DIR, exist_ok=True)
         tmp_path = SETTINGS_PATH + ".tmp"
@@ -97,6 +107,7 @@ def _save(data):
             _settings_mtime = os.path.getmtime(SETTINGS_PATH)
         except OSError:
             _settings_mtime = None
+        _disk_synced = True
     except OSError as exc:
         logger.warning("Could not save display settings to %s: %s", SETTINGS_PATH, exc)
 
@@ -219,8 +230,12 @@ def _consume_reload_request() -> bool:
 
 def reload() -> bool:
     """Reload settings from disk if file changed externally."""
-    global _state, _settings_mtime
+    global _state, _settings_mtime, _disk_synced
     force = _consume_reload_request()
+    # Do not clobber in-memory slider edits (brightness / theme RGB) that have
+    # not been flushed to disk yet — otherwise values flicker every poll.
+    if not force and not _disk_synced:
+        return False
     try:
         with open(SETTINGS_PATH, encoding="utf-8") as f:
             data = json.load(f)
@@ -240,6 +255,7 @@ def reload() -> bool:
         _settings_mtime = os.path.getmtime(SETTINGS_PATH)
     except OSError:
         _settings_mtime = None
+    _disk_synced = True
     _sync_config_min_height()
     # Re-apply runtime palette when theme changes are saved externally
     # (e.g. from the web portal process).
@@ -283,9 +299,13 @@ def brightness_percent():
     return int(_state.get("brightness_percent", 100))
 
 
-def set_brightness_percent(value: int):
-    _state["brightness_percent"] = max(10, min(100, int(value)))
-    _save(_state)
+def set_brightness_percent(value: int, *, persist: bool = True):
+    global _disk_synced
+    _state["brightness_percent"] = clamp_brightness_percent(value)
+    if persist:
+        _save(_state)
+    else:
+        _disk_synced = False
 
 
 def distance_units() -> str:
@@ -524,10 +544,13 @@ def set_theme_index(index: int):
 
 
 def set_custom_theme_rgb(r: int, g: int, b: int, *, persist: bool = True):
+    global _disk_synced
     _state["theme_custom"] = True
     _state["custom_theme_rgb"] = list(color_presets.normalize_rgb((r, g, b)))
     if persist:
         _save(_state)
+    else:
+        _disk_synced = False
     apply_theme_colors()
 
 

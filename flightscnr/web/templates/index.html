@@ -140,11 +140,8 @@
     <details class="card" open>
         <summary><span class="ico">&#9788;</span>Display &amp; screens<span class="sum">brightness, timeouts, clock</span><span class="chev">&#9656;</span></summary>
         <div class="body">
-            <label for="bright_pct">Screen brightness</label>
-            <select id="bright_pct">
-                <option value="20">20%</option><option value="40">40%</option>
-                <option value="60">60%</option><option value="80">80%</option><option value="100">100%</option>
-            </select>
+            <label for="bright_pct">Screen brightness <span id="bright_pct_label">100%</span></label>
+            <input id="bright_pct" type="range" min="3" max="100" step="1" value="100">
             <div class="row2">
                 <div>
                     <label for="detail_timeout">Flight detail screen timeout</label>
@@ -191,6 +188,7 @@
             <div id="dim-row">
                 <label for="night_dim">Dim brightness</label>
                 <select id="night_dim">
+                    <option value="3">3%</option><option value="5">5%</option>
                     <option value="10">10%</option><option value="15">15%</option><option value="20">20%</option>
                     <option value="30">30%</option><option value="40">40%</option><option value="50">50%</option>
                 </select>
@@ -561,6 +559,7 @@ async function loadAll() {
     try {
         const d = await jsonFetch("/display/json");
         $("bright_pct").value = String(d.brightness_percent || 100);
+        syncBrightLabel();
         $("detail_timeout").value = String(d.flight_detail_timeout_s ?? 20);
         $("clock_timeout").value = String(d.clock_timeout_s ?? 10);
         $("idle_clock").checked = !!d.auto_idle_clock;
@@ -607,6 +606,11 @@ async function loadAll() {
 
 function toggleDimRow() {
     $("dim-row").style.display = $("night_mode").value === "dim" ? "block" : "none";
+}
+
+function syncBrightLabel() {
+    const el = $("bright_pct_label");
+    if (el) el.textContent = `${$("bright_pct").value}%`;
 }
 
 async function saveRadar() {
@@ -945,6 +949,7 @@ $("btn-keys-restart").addEventListener("click", () => saveApiKeys(true));
 $("night_mode").addEventListener("change", toggleDimRow);
 $("dist_units").addEventListener("change", refreshRangeInput);
 $("range_value").addEventListener("blur", snapRangeInputPreview);
+$("bright_pct").addEventListener("input", syncBrightLabel);
 
 document.addEventListener("DOMContentLoaded", () => {
     loadAll();

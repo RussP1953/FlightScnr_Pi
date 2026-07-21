@@ -149,6 +149,7 @@ class RoundTouchDisplay:
         self._pan_offset = (0, 0)
         self._pan_drag_start = None
         self._rgb_slider_channel: int | None = None
+        self._brightness_slider_active = False
 
         radar._init_sweep()
         map_bg.request_background()
@@ -407,6 +408,7 @@ class RoundTouchDisplay:
         if self._rgb_slider_channel is not None:
             settings.persist_theme_settings()
             self._rgb_slider_channel = None
+        self._brightness_slider_active = False
         if page != self.settings_page:
             self._scroll.reset()
             if page not in (info.PAGE_DISPLAY, info.PAGE_OPTIONS):
@@ -456,11 +458,8 @@ class RoundTouchDisplay:
             self._tick_ais()
             self._refresh_flights()
         elif action == "brightness":
-            pct = settings.brightness_percent() + 10
-            if pct > 100:
-                pct = 10
-            settings.set_brightness_percent(pct)
-            self._apply_brightness()
+            # Brightness is a drag slider; taps are handled via brightness_slider_at.
+            return
         elif action == "units":
             settings.toggle_distance_units()
         elif action == "range":
@@ -883,6 +882,15 @@ class RoundTouchDisplay:
                 if pos and info.theme_slider_at(pos[0], pos[1], self._scroll.offset) is not None:
                     self.input.consume_scroll_drag()
                     return
+        if self.screen == SCREEN_SETTINGS and self.settings_page == info.PAGE_DISPLAY:
+            if self._brightness_slider_active:
+                self.input.consume_scroll_drag()
+                return
+            if self.input.is_dragging():
+                pos = self.input.drag_pos()
+                if pos and info.brightness_slider_at(pos[0], pos[1], self._scroll.offset):
+                    self.input.consume_scroll_drag()
+                    return
         dy = self.input.consume_scroll_drag()
         if not dy:
             return
@@ -902,6 +910,18 @@ class RoundTouchDisplay:
             return False
         rgb[channel] = value
         settings.set_custom_theme_rgb(*rgb, persist=persist)
+        return True
+
+    def _apply_brightness_slider(self, x: int, *, persist: bool = True) -> bool:
+        value = info.brightness_slider_value_at(x, self._scroll.offset)
+        if value is None:
+            return False
+        if value == settings.brightness_percent():
+            self._display_focus = info.brightness_row_index()
+            return False
+        settings.set_brightness_percent(value, persist=persist)
+        self._display_focus = info.brightness_row_index()
+        self._apply_brightness()
         return True
 
     def _update_theme_rgb_drag(self) -> bool:
@@ -931,12 +951,41 @@ class RoundTouchDisplay:
         self.input.consume_scroll_drag()
         return changed
 
+    def _update_brightness_slider_drag(self) -> bool:
+        """Horizontal drag on Display brightness slider; suppresses page scroll while active."""
+        if self.screen != SCREEN_SETTINGS or self.settings_page != info.PAGE_DISPLAY:
+            self._brightness_slider_active = False
+            return False
+        if not self.input.is_dragging():
+            if self._brightness_slider_active:
+                self._brightness_slider_active = False
+                settings.set_brightness_percent(settings.brightness_percent(), persist=True)
+                self.input.consume_scroll_drag()
+                return True
+            return False
+        pos = self.input.drag_pos()
+        if pos is None:
+            return False
+        x, y = pos
+        if not self._brightness_slider_active:
+            if not info.brightness_slider_at(x, y, self._scroll.offset):
+                return False
+            self._brightness_slider_active = True
+        changed = self._apply_brightness_slider(x, persist=False)
+        self.input.consume_scroll_drag()
+        return changed
+
     def _handle_settings_tap(self, x: int | None = None, y: int | None = None):
         if (
             self.settings_page in (info.PAGE_DISPLAY, info.PAGE_OPTIONS)
             and x is not None
             and y is not None
         ):
+            if self.settings_page == info.PAGE_DISPLAY and info.brightness_slider_at(
+                x, y, self._scroll.offset
+            ):
+                self._apply_brightness_slider(x, persist=True)
+                return
             row = info.display_row_at(x, y, self.settings_page, self._scroll.offset)
             if row is not None:
                 self._apply_display_row(self.settings_page, row)
@@ -1417,7 +1466,7 @@ class RoundTouchDisplay:
                                 self._apply_scale_step(scale_delta)
                         self._handle_navigation()
 
-                if self._update_facing_drag() or self._update_map_pan_drag() or self._update_theme_rgb_drag():
+                if self._update_facing_drag() or self._update_map_pan_drag() or self._update_theme_rgb_drag() or self._update_brightness_slider_drag():
                     self._safe_draw()
                     self._last_radar_draw = time.time()
 

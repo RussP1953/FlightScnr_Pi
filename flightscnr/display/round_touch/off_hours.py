@@ -14,6 +14,8 @@ except ImportError:
     NIGHT_END = "06:00"
     BRIGHTNESS_NIGHT = 50
 
+from display.round_touch.settings import clamp_brightness_percent
+
 DATA_DIR = os.environ.get("FLIGHTSCNR_DATA_DIR", "/var/lib/flightscnr")
 PREFS_PATH = os.path.join(DATA_DIR, "off_hours_prefs.json")
 
@@ -38,7 +40,7 @@ def _env_defaults() -> dict:
         "start": str(NIGHT_START),
         "end": str(NIGHT_END),
         "mode": mode,
-        "dim_percent": max(10, min(100, int(BRIGHTNESS_NIGHT or 50))),
+        "dim_percent": clamp_brightness_percent(int(BRIGHTNESS_NIGHT or 50)),
     }
 
 
@@ -73,7 +75,9 @@ def _load() -> dict:
         mode = "clock"
     out["mode"] = mode
     try:
-        out["dim_percent"] = max(10, min(100, int(out.get("dim_percent", defaults["dim_percent"]))))
+        out["dim_percent"] = clamp_brightness_percent(
+            int(out.get("dim_percent", defaults["dim_percent"]))
+        )
     except (TypeError, ValueError):
         out["dim_percent"] = defaults["dim_percent"]
     return out
@@ -110,7 +114,7 @@ def update_prefs(
         _state["mode"] = new_mode
     if dim_percent is not None:
         try:
-            _state["dim_percent"] = max(10, min(100, int(dim_percent)))
+            _state["dim_percent"] = clamp_brightness_percent(int(dim_percent))
         except (TypeError, ValueError):
             pass
     _save(_state)
@@ -142,6 +146,6 @@ def effective_brightness_percent(day_percent: int) -> int:
         if cfg.get("mode") == "off":
             return 0
         if cfg.get("mode") == "clock":
-            return max(10, min(100, int(day_percent)))
-        return max(10, min(100, int(cfg.get("dim_percent", 20))))
+            return clamp_brightness_percent(int(day_percent))
+        return clamp_brightness_percent(int(cfg.get("dim_percent", 20)))
     return day_percent

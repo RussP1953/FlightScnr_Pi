@@ -33,14 +33,15 @@ PAGE_COUNT = 4
 FOOTER_BUTTONS = ("prev", "next", "radar")
 
 # Display + Options were one tall page; split so both fit the round viewport.
+# Brightness is last and drawn as a drag slider (not a tap-cycle row).
 DISPLAY_ACTIONS = (
     "traffic",
-    "brightness",
     "units",
     "range",
     "compass",
     "facing",
     "recenter",
+    "brightness",
 )
 OPTIONS_ACTIONS = (
     "min_height",
@@ -240,7 +241,10 @@ def display_row_at(x: int, y: int, page: int, scroll_offset: int = 0) -> int | N
     body_font = _display_font()
     top = nav.content_top_y(has_dots=True)
     bottom = nav.content_bottom_y()
+    actions = _row_actions(page)
     for i in range(count):
+        if actions[i] == "brightness":
+            continue
         ry = row_y + i * row_h
         if ry + body_font.get_height() < top or ry > bottom:
             continue
@@ -256,6 +260,67 @@ def display_row_at(x: int, y: int, page: int, scroll_offset: int = 0) -> int | N
     return None
 
 
+def _brightness_slider_metrics() -> tuple[int, int, int, int]:
+    """track_w, row_h, label_w, value_w for the Display brightness slider."""
+    body_font = _display_font()
+    label_w = body_font.size("Brightness")[0]
+    value_w = body_font.size("100%")[0]
+    track_w = theme.s(120)
+    row_h = body_font.get_height() + theme.s(8)
+    return track_w, row_h, label_w, value_w
+
+
+def brightness_row_index() -> int:
+    try:
+        return DISPLAY_ACTIONS.index("brightness")
+    except ValueError:
+        return len(DISPLAY_ACTIONS) - 1
+
+
+def _brightness_slider_geometry(scroll_offset: int = 0) -> tuple[pygame.Rect, int, int] | None:
+    """(hit_rect, track_x, track_w) for the Display brightness slider."""
+    if "brightness" not in DISPLAY_ACTIONS:
+        return None
+    row_y, row_h, _ = _display_layout(PAGE_DISPLAY, scroll_offset)
+    track_w, slider_h, label_w, value_w = _brightness_slider_metrics()
+    gap = theme.s(8)
+    idx = brightness_row_index()
+    # Align slider with the brightness slot; allow a slightly taller hit target.
+    ry = row_y + idx * row_h
+    block_w = label_w + gap + track_w + gap + value_w
+    left_x = theme.CENTER_X - block_w // 2
+    track_x = left_x + label_w + gap
+    hit_pad = theme.s(8)
+    hit = pygame.Rect(
+        track_x - hit_pad,
+        int(ry - theme.s(2)),
+        track_w + 2 * hit_pad,
+        max(row_h, slider_h) + theme.s(4),
+    )
+    return hit, track_x, track_w
+
+
+def brightness_slider_at(x: int, y: int, scroll_offset: int = 0) -> bool:
+    geom = _brightness_slider_geometry(scroll_offset)
+    if geom is None:
+        return False
+    hit, _, _ = geom
+    return hit.collidepoint(x, y)
+
+
+def brightness_slider_value_at(x: int, scroll_offset: int = 0) -> int | None:
+    """Map screen x on the brightness track to BRIGHTNESS_MIN–100."""
+    geom = _brightness_slider_geometry(scroll_offset)
+    if geom is None:
+        return None
+    _, track_x, track_w = geom
+    lo = settings.BRIGHTNESS_MIN_PERCENT
+    hi = settings.BRIGHTNESS_MAX_PERCENT
+    t = (x - track_x) / max(1, track_w)
+    span = hi - lo
+    return max(lo, min(hi, int(round(lo + t * span))))
+
+
 def display_action_at(page: int, row: int) -> str | None:
     actions = _row_actions(page)
     if 0 <= row < len(actions):
@@ -267,14 +332,15 @@ def _display_row_labels() -> list[str]:
     units = settings.distance_units()
     rose = "on" if settings.show_compass_rose() else "off"
     facing = settings.facing_label()
+    # Brightness is drawn as a slider; placeholder keeps row count aligned.
     return [
         f"Traffic: {settings.traffic_mode_label()}",
-        f"Brightness: {settings.brightness_percent()}%",
         f"Units: {units}",
         f"Range: {settings.scale_label()}",
         f"Compass Rose: {rose}",
         f"Facing: {facing}",
         "Recenter map",
+        "",  # brightness slider
     ]
 
 
@@ -297,15 +363,21 @@ def _draw_settings_rows(
     display_focus: int,
     top: int,
     bottom: int,
+    *,
+    draw_brightness_slider: bool = False,
 ) -> int:
     body_font = _display_font()
     row_y = top + theme.s(4) - scroll_offset
     row_h = body_font.get_height() + theme.s(6)
     total_h = theme.s(4) + len(rows) * row_h
     max_scroll = max(0, total_h - (bottom - top))
+    brightness_idx = brightness_row_index() if draw_brightness_slider else -1
     for i, line in enumerate(rows):
         ry = row_y + i * row_h
         if ry + body_font.get_height() < top or ry > bottom:
+            continue
+        if draw_brightness_slider and i == brightness_idx:
+            _draw_brightness_slider_row(surface, int(ry), display_focus == i)
             continue
         text_w, text_h = body_font.size(line)
         pad_x = theme.s(10)
@@ -321,6 +393,51 @@ def _draw_settings_rows(
             pygame.draw.rect(surface, theme.GRID, rect, max(1, theme.s(1)))
         draw.draw_center_line(surface, line, int(ry), body_font, theme.MUTED)
     return max_scroll
+
+
+def _draw_brightness_slider_row(surface, ry: int, focused: bool) -> None:
+    body_font = _display_font()
+    track_w, slider_h, label_w, value_w = _brightness_slider_metrics()
+    gap = theme.s(8)
+    pct = settings.brightness_percent()
+    lo = settings.BRIGHTNESS_MIN_PERCENT
+    hi = settings.BRIGHTNESS_MAX_PERCENT
+    block_w = label_w + gap + track_w + gap + value_w
+    left_x = theme.CENTER_X - block_w // 2
+    track_x = left_x + label_w + gap
+    text_h = body_font.get_height()
+    row_h = max(slider_h, text_h + theme.s(6))
+    if focused:
+        pad = theme.s(4)
+        focus = pygame.Rect(
+            left_x - pad,
+            ry - pad,
+            block_w + pad * 2,
+            row_h + pad,
+        )
+        pygame.draw.rect(surface, theme.GRID, focus, max(1, theme.s(1)))
+    label = body_font.render("Brightness", True, theme.MUTED)
+    surface.blit(label, (left_x, int(ry + (row_h - text_h) // 2)))
+    track_cy = int(ry + row_h // 2)
+    track_rect = pygame.Rect(track_x, track_cy - max(2, theme.s(2)), track_w, max(4, theme.s(4)))
+    pygame.draw.rect(surface, theme.HINT, track_rect, border_radius=theme.s(2))
+    t = (pct - lo) / max(1, hi - lo)
+    fill_w = int(round(t * track_w))
+    if fill_w > 0:
+        fill_rect = pygame.Rect(track_x, track_rect.y, fill_w, track_rect.height)
+        pygame.draw.rect(surface, theme.SWEEP, fill_rect, border_radius=theme.s(2))
+    knob_x = track_x + fill_w
+    knob_r = max(5, theme.s(6))
+    pygame.draw.circle(surface, theme.SWEEP, (knob_x, track_cy), knob_r)
+    pygame.draw.circle(surface, theme.LABEL, (knob_x, track_cy), knob_r, max(1, theme.s(1)))
+    value = body_font.render(f"{pct}%", True, theme.MUTED)
+    surface.blit(
+        value,
+        (
+            track_x + track_w + gap,
+            int(ry + (row_h - text_h) // 2),
+        ),
+    )
 
 
 def draw_info(surface, page: int, scroll_offset: int = 0, display_focus: int = 0) -> int:
@@ -368,6 +485,7 @@ def draw_info(surface, page: int, scroll_offset: int = 0, display_focus: int = 0
             display_focus,
             top,
             bottom,
+            draw_brightness_slider=True,
         )
 
     elif page == PAGE_OPTIONS:
