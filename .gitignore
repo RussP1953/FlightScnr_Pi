@@ -53,5 +53,6 @@ logo-diff/
 flightscnr/icons
 # Installer stamp (icons themselves are tracked)
 flightscnr/assets/aircraft/icons/.installed
+flightscnr/assets/weather/png/.installed
 # Local Pi settings persisted at runtime
 round_touch_settings.json
