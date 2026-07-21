@@ -240,9 +240,9 @@
             <div class="chk"><label for="alert-mil">Alert on military aircraft</label><span class="switch"><input id="alert-mil" type="checkbox"><span class="track"></span></span></div>
             <div class="chk"><label for="alert-emrg">Alert on emergency squawk (7700/7600/7500)</label><span class="switch"><input id="alert-emrg" type="checkbox"><span class="track"></span></span></div>
             <div class="chk"><label for="alert-hide">Hide non-alerted aircraft on radar</label><span class="switch"><input id="alert-hide" type="checkbox"><span class="track"></span></span></div>
-            <label for="alert-watch">Watch list (callsigns)</label>
-            <input id="alert-watch" type="text" autocomplete="off" placeholder="UAL123, DAL456">
-            <p class="hint">Comma-separated callsigns (3-letter airline + flight number). Highlights when a watched flight appears on radar.</p>
+            <label for="alert-watch">Watch list (callsigns / registrations)</label>
+            <input id="alert-watch" type="text" autocomplete="off" placeholder="UAL123, D-AIML, N2136U">
+            <p class="hint">Many flights to highlight on the local radar when they appear in range — not a dedicated follow. Callsigns (UAL123) or tails (D-AIML, N2136U).</p>
             <label for="alert-watch-types">Watch list (aircraft types)</label>
             <input id="alert-watch-types" type="text" autocomplete="off" placeholder="A337, B748, A330-743">
             <p class="hint">Comma-separated ICAO type codes or designations (e.g. A337, B738, A330-743). Matches every aircraft of that type on radar. Clear either field and Save to remove those watches.</p>
@@ -252,14 +252,15 @@
     </details>
 
     <details class="card">
-        <summary><span class="ico">&#9992;</span>Tracking<span class="sum">callsign + route search</span><span class="chev">&#9656;</span></summary>
+        <summary><span class="ico">&#9992;</span>Tracking<span class="sum">follow one flight worldwide</span><span class="chev">&#9656;</span></summary>
         <div class="body">
-            <label for="callsign-input">Track callsign</label>
+            <label for="callsign-input">Track callsign or registration</label>
             <div class="track-row">
-                <input type="text" id="callsign-input" placeholder="UAL1134" maxlength="10">
+                <input type="text" id="callsign-input" placeholder="UAL1134 / N2136U / CS-TPQ" maxlength="12">
                 <button class="btn btn-primary" id="btn-track" type="button">Track</button>
                 <button class="btn" id="btn-clear-track" type="button">Clear</button>
             </div>
+            <p class="hint">Follow <strong>one</strong> flight worldwide on the Tracked screen (route, ETA, pin) — even outside radar range. Callsign (UAL1134 / DLH3Y) or tail (D-AIML, N2136U).</p>
             <p class="hint" id="current-tracked">Loading tracked flight...</p>
             <div id="track-status" class="status"></div>
             <div class="track-row hidden" id="confirm-row">
@@ -865,7 +866,7 @@ async function lookupAndTrack() {
             body: JSON.stringify({ callsign }),
         });
         if (data.found) {
-            await saveTracked(data.callsign || callsign);
+            await saveTracked(data.track_as || data.callsign || callsign);
             setTrackStatus(`Saved: ${data.summary || callsign}`);
             $("callsign-input").value = "";
             return;

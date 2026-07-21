@@ -1305,25 +1305,40 @@ class Overhead:
         self._tracked_schedule_cache.clear()
 
     def _grab_tracked(self, flight_input, zone_flights=None):
+        from utilities.aircraft_alert import looks_like_registration
+
         flight_input = flight_input.strip().upper()
+        original = flight_input
 
         # Convert IATA format (UA353, B6555) to ICAO (UAL353, JBU555) for gRPC filter
-        if len(flight_input) >= 3 and flight_input[:2] in IATA_TO_ICAO and flight_input[2:3].isdigit():
-            icao_prefix = IATA_TO_ICAO.get(flight_input[:2])
-            if icao_prefix:
-                flight_input = icao_prefix + flight_input[2:]
+        if not looks_like_registration(flight_input):
+            if len(flight_input) >= 3 and flight_input[:2] in IATA_TO_ICAO and flight_input[2:3].isdigit():
+                icao_prefix = IATA_TO_ICAO.get(flight_input[:2])
+                if icao_prefix:
+                    flight_input = icao_prefix + flight_input[2:]
 
         match = None
 
         try:
+            # Prefer registration filter for tail numbers; callsign otherwise.
             # Always fetch a fresh live position — the zone feed cache can be ~90s stale.
-            match = self._api.find_by_callsign(flight_input)
+            if looks_like_registration(original):
+                match = self._api.find_by_registration(original)
+                if not match:
+                    match = self._api.find_by_callsign(flight_input)
+            else:
+                match = self._api.find_by_callsign(flight_input)
+                if not match:
+                    match = self._api.find_by_registration(original)
 
             if not match:
                 return None
 
             flight_details = self._api.get_flight_details(match)
             match.set_flight_details(flight_details)
+
+            display_callsign = (match.callsign or "").strip().upper() or flight_input
+            registration = (match.registration or "").strip().upper()
 
             # Use flight_progress from the API for distances (values are in KM)
             fp = self.safe_get(flight_details, "flight_progress") or {}
@@ -1406,10 +1421,10 @@ class Overhead:
                 airline_name = _airline_name_lookup(airline_icao_code)
 
             # GA owner lookup for N-number aircraft
-            if (not airline_name and match.registration
-                    and match.registration.startswith("N")
-                    and match.registration[1:2].isdigit()):
-                ac_info = _adsbdb_aircraft(match.registration)
+            if (not airline_name and registration
+                    and registration.startswith("N")
+                    and registration[1:2].isdigit()):
+                ac_info = _adsbdb_aircraft(registration)
                 if ac_info.get("owner"):
                     airline_name = ac_info["owner"]
                     if airline_name == airline_name.upper():
@@ -1427,16 +1442,17 @@ class Overhead:
             airline_icao = resolve_logo_icao(
                 operator_icao=match.airline_icao or "",
                 flight_number=flight_number,
-                callsign=flight_input,
+                callsign=display_callsign,
             )
             owner_icao = airline_icao
-            brand = marketing_brand_name(flight_number) or marketing_brand_name(flight_input)
+            brand = marketing_brand_name(flight_number) or marketing_brand_name(display_callsign)
             if brand:
                 airline_name = brand
 
             return {
-                "callsign": flight_input,
-                "number": match.number or flight_input,
+                "callsign": display_callsign,
+                "registration": registration,
+                "number": match.number or display_callsign,
                 "flight_number": flight_number,
                 "airline_name": airline_name,
                 "owner_icao": owner_icao,

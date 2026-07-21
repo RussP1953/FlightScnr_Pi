@@ -352,8 +352,10 @@ def _is_tracked(flight) -> bool:
     tracked = (load_tracked_callsign() or "").strip().upper()
     if not tracked:
         return False
-    cs = (flight.get("callsign") or "").strip().upper()
-    return cs == tracked or cs.startswith(tracked)
+    from utilities.aircraft_alert import flight_identity_keys
+
+    tracked_keys = flight_identity_keys({"callsign": tracked, "registration": tracked})
+    return bool(tracked_keys & flight_identity_keys(flight))
 
 
 def _light_basemap() -> bool:

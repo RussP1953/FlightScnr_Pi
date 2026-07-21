@@ -34,6 +34,24 @@ from utilities.cache import FR24Cache
 logger = logging.getLogger(__name__)
 
 
+def registration_lookup_variants(value: str) -> list[str]:
+    """Hyphen / compact registration forms for FR24 regs_list."""
+    try:
+        from utilities.aircraft_alert import registration_lookup_variants as _variants
+
+        return _variants(value)
+    except Exception:
+        raw = "".join(ch for ch in str(value or "").upper() if ch.isalnum() or ch == "-")
+        raw = raw.strip("-")
+        if not raw:
+            return []
+        out = [raw]
+        compact = raw.replace("-", "")
+        if compact not in out:
+            out.append(compact)
+        return out
+
+
 def _is_jwt(token: str) -> bool:
     """Check if a string looks like a valid JWT (3 dot-separated base64 parts)."""
     parts = token.split(".")
@@ -308,6 +326,59 @@ class FR24Client:
             self._fr24_ok = False
             return None
 
+    def find_by_registration(self, registration: str) -> Optional[LiveFlight]:
+        """
+        Find a live flight by aircraft registration / tail number.
+
+        Uses Filter.regs_list (e.g. N2136U, CS-TPQ, D-AIML). Tries hyphen
+        variants one at a time and retries — the live feed can miss briefly.
+
+        :param registration: Tail number / registration
+        :returns: LiveFlight if found, None otherwise
+        """
+        import time as _time
+
+        variants = registration_lookup_variants(registration)
+        if not variants:
+            return None
+
+        logger.info(
+            "FR24: Searching for registration %s (server-side filter)",
+            "/".join(variants),
+        )
+        last_error = None
+        for attempt in range(3):
+            for variant in variants:
+                try:
+                    results = self._run_with_client(
+                        lambda fr24, v=variant: self._find_by_registration_async(fr24, [v])
+                    )
+                    self._fr24_ok = True
+                    if results:
+                        hit = results[0]
+                        logger.info(
+                            "FR24: Found reg %s (callsign=%s) at lat=%.2f lon=%.2f",
+                            hit.registration or variant,
+                            hit.callsign or "?",
+                            hit.latitude,
+                            hit.longitude,
+                        )
+                        return hit
+                except (ConnectionError, OSError) as e:
+                    last_error = e
+                    self._fr24_ok = False
+                    logger.warning("FR24: Connection error during registration search: %s", e)
+                except Exception as e:
+                    last_error = e
+                    self._fr24_ok = False
+                    logger.warning("FR24: Error searching for registration %s: %s", variant, e)
+            if attempt < 2:
+                _time.sleep(0.45 * (attempt + 1))
+
+        if last_error is None:
+            logger.info("FR24: registration %s not found in live feed", variants[0])
+        return None
+
     def find_by_route(self, origin_iata: str, destination_iata: str) -> list[LiveFlight]:
         """
         Find live flights by origin and destination airport using gRPC server-side filter.
@@ -353,6 +424,32 @@ class FR24Client:
                 traffic_type=TrafficType.ALL,
             ),
             filters_list=Filter(callsigns_list=[callsign]),
+            field_mask=FieldMask(paths=["flight", "reg", "route", "type"]),
+            limit=100,
+            maxage=14400,
+            restriction_mode=RestrictionVisibility.NOT_VISIBLE,
+        )
+
+        response = await _grpc_live_feed(
+            fr24.http.client, req, fr24.http.grpc_headers
+        )
+        result = _parse_data(response.content, LiveFeedResponse)
+        proto = result.unwrap()
+
+        return self._parse_flights(proto)
+
+    async def _find_by_registration_async(
+        self, fr24: FR24, registrations: list[str]
+    ) -> list[LiveFlight]:
+        """Server-side filtered registration search via raw gRPC protobuf."""
+        req = LiveFeedRequest(
+            bounds=LocationBoundaries(north=90, south=-90, west=-180, east=180),
+            settings=VisibilitySettings(
+                sources_list=range(10),
+                services_list=range(12),
+                traffic_type=TrafficType.ALL,
+            ),
+            filters_list=Filter(regs_list=list(registrations)),
             field_mask=FieldMask(paths=["flight", "reg", "route", "type"]),
             limit=100,
             maxage=14400,

@@ -12,9 +12,40 @@ ALERT_PATH = os.path.join(DATA_DIR, "alert_prefs.json")
 
 _WATCH_MAX = 16
 _TYPE_MAX = 16
+# Airline ICAO callsigns (UAL123) or registrations / tails (N2136U, D-AIML, CS-TPQ).
 _CALLSIGN_RE = re.compile(r"^[A-Z]{3}[A-Z0-9]+$")
+_REG_RE = re.compile(r"^[A-Z0-9]{1,2}-?[A-Z0-9]{2,6}$")
 # ICAO type codes (B738, A337) or marketing tokens (A330-743).
 _TYPE_RE = re.compile(r"^[A-Z0-9][A-Z0-9\-]{1,15}$")
+
+
+def _is_watch_token(token: str) -> bool:
+    if not token:
+        return False
+    if _CALLSIGN_RE.match(token):
+        return True
+    if _REG_RE.match(token) and any(ch.isdigit() for ch in token.replace("-", "")):
+        return True
+    # Letter-only civil regs (D-AIML, CS-TPQ) — require a hyphen or N-number shape.
+    if "-" in token and _REG_RE.match(token):
+        return True
+    if len(token) >= 2 and token[0] == "N" and token[1].isdigit():
+        return True
+    return False
+
+
+def _parse_watch(blob: str) -> list[str]:
+    out: list[str] = []
+    if not blob:
+        return out
+    for raw in blob.replace(";", ",").split(","):
+        token = "".join(raw.upper().split())
+        if not token or not _is_watch_token(token):
+            continue
+        if token not in out and len(out) < _WATCH_MAX:
+            out.append(token)
+    return out
+
 
 _defaults = {
     "alert_military": False,
@@ -34,19 +65,6 @@ def _save(data: dict) -> None:
         os.replace(tmp, ALERT_PATH)
     except OSError as exc:
         logger.warning("Could not save alert prefs: %s", exc)
-
-
-def _parse_watch(blob: str) -> list[str]:
-    out: list[str] = []
-    if not blob:
-        return out
-    for raw in blob.replace(";", ",").split(","):
-        token = "".join(raw.upper().split())
-        if not token or not _CALLSIGN_RE.match(token):
-            continue
-        if token not in out and len(out) < _WATCH_MAX:
-            out.append(token)
-    return out
 
 
 def _parse_watch_types(blob: str) -> list[str]:

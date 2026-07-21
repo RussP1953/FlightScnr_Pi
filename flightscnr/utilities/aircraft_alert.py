@@ -101,6 +101,47 @@ def _normalize_registration(value) -> str:
     return "".join(ch for ch in str(value or "").upper() if ch.isalnum())
 
 
+def looks_like_registration(value: str) -> bool:
+    """True for tail numbers (N2136U, CS-TPQ) vs airline callsigns (UAL123)."""
+    raw = str(value or "").strip().upper()
+    if not raw:
+        return False
+    if "-" in raw:
+        return True
+    compact = _normalize_registration(raw)
+    if len(compact) >= 2 and compact[0] == "N" and compact[1].isdigit():
+        return True
+    return False
+
+
+def registration_lookup_variants(value: str) -> list[str]:
+    """FR24 regs_list candidates (hyphenated + compact forms)."""
+    raw = "".join(ch for ch in str(value or "").upper() if ch.isalnum() or ch == "-")
+    raw = raw.strip("-")
+    if len(raw) < 2:
+        return []
+    out: list[str] = []
+
+    def add(v: str) -> None:
+        if v and v not in out:
+            out.append(v)
+
+    add(raw)
+    compact = raw.replace("-", "")
+    add(compact)
+    if "-" not in raw and len(compact) >= 4:
+        if compact[0] == "N" and compact[1].isdigit():
+            pass
+        elif len(compact) >= 5 and compact[0].isalpha() and not compact[1].isdigit():
+            # Prefer 1-letter nationality marks first (D-AIML, G-ABCD, F-HXXX).
+            add(f"{compact[0]}-{compact[1:]}")
+            if compact[:2].isalpha():
+                add(f"{compact[:2]}-{compact[2:]}")
+        elif compact[0].isalpha() and not compact[1].isalpha():
+            add(f"{compact[0]}-{compact[1:]}")
+    return out
+
+
 def flight_identity_keys(flight: dict) -> frozenset[str]:
     """Stable identity keys for FR24 ↔ ADS-B merge (hex, registration, callsign)."""
     keys: set[str] = set()
@@ -272,8 +313,17 @@ def on_watchlist(flight: dict) -> bool:
 
 
 def on_watchlist_callsign(flight: dict) -> bool:
-    cs = _normalize_callsign(flight.get("callsign"))
-    return bool(cs) and cs in alert_prefs.watch_callsigns()
+    watched = alert_prefs.watch_callsigns()
+    if not watched:
+        return False
+    flight_keys = flight_identity_keys(flight)
+    if not flight_keys:
+        return False
+    for token in watched:
+        token_keys = flight_identity_keys({"callsign": token, "registration": token})
+        if token_keys & flight_keys:
+            return True
+    return False
 
 
 def on_watchlist_type(flight: dict) -> bool:

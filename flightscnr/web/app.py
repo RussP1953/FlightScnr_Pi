@@ -95,44 +95,77 @@ def _counter_summary(log: dict) -> list[dict]:
 
 def lookup_flight(callsign):
     """
-    Try to find a live flight by callsign or flight number.
+    Try to find a live flight by callsign, flight number, or registration.
     Returns a dict with found=True/False and flight info if found.
     """
-    callsign = callsign.strip().upper()
+    original = callsign.strip().upper()
+    callsign = original
 
-    # Convert IATA (UA353) to ICAO (UAL353)
+    from utilities.aircraft_alert import looks_like_registration
     from utilities.overhead import IATA_TO_ICAO
-    if len(callsign) >= 3 and callsign[:2] in IATA_TO_ICAO and callsign[2:3].isdigit():
-        icao_prefix = IATA_TO_ICAO.get(callsign[:2])
-        if icao_prefix:
-            callsign = icao_prefix + callsign[2:]
+
+    # Convert IATA (UA353) to ICAO (UAL353) — skip for tail numbers
+    if not looks_like_registration(callsign):
+        if len(callsign) >= 3 and callsign[:2] in IATA_TO_ICAO and callsign[2:3].isdigit():
+            icao_prefix = IATA_TO_ICAO.get(callsign[:2])
+            if icao_prefix:
+                callsign = icao_prefix + callsign[2:]
 
     try:
         api = _fr24_client
 
-        # Server-side callsign filter (searches FR24's full worldwide feed)
-        match = api.find_by_callsign(callsign)
+        match = None
+        if looks_like_registration(original):
+            match = api.find_by_registration(original)
+            if not match:
+                match = api.find_by_callsign(callsign)
+        else:
+            match = api.find_by_callsign(callsign)
+            if not match:
+                match = api.find_by_registration(original)
 
         if not match:
             return {"found": False}
 
-        # Get full details for airline name and route
-        details = api.get_flight_details(match)
-        match.set_flight_details(details)
+        airline = ""
+        origin = "???"
+        destination = "???"
+        resolved_cs = (match.callsign or "").strip().upper() or callsign
+        registration = (match.registration or "").strip().upper()
+        number = match.number or resolved_cs
+        # Keep the user's tail number as the track token when they entered a reg.
+        track_as = original if looks_like_registration(original) else resolved_cs
 
-        airline = match.airline_name or ""
-        origin = match.origin_airport_iata or "???"
-        destination = match.destination_airport_iata or "???"
-        number = match.number or callsign
+        # Details are nice-to-have — a live position match is enough to track.
+        try:
+            details = api.get_flight_details(match)
+            match.set_flight_details(details)
+            airline = match.airline_name or ""
+            origin = match.origin_airport_iata or "???"
+            destination = match.destination_airport_iata or "???"
+            number = match.number or resolved_cs
+            registration = (match.registration or registration).strip().upper()
+            resolved_cs = (match.callsign or "").strip().upper() or resolved_cs
+        except Exception as detail_exc:
+            print(f"Lookup details unavailable for {track_as}: {detail_exc}")
+            airline = match.airline_name or ""
+            origin = match.origin_airport_iata or "???"
+            destination = match.destination_airport_iata or "???"
+
+        summary = f"{airline} {number} {origin}→{destination}".strip()
+        if registration and looks_like_registration(original):
+            summary = f"{registration} · {summary}".strip(" ·")
 
         return {
             "found": True,
-            "callsign": match.callsign,
+            "callsign": resolved_cs,
+            "registration": registration,
+            "track_as": track_as,
             "number": number,
             "airline": airline,
             "origin": origin,
             "destination": destination,
-            "summary": f"{airline} {number} {origin}→{destination}",
+            "summary": summary,
         }
 
     except Exception as e:
@@ -312,7 +345,7 @@ def tracked_set():
     data = request.get_json(force=True)
     if not data:
         return jsonify({"message": "Invalid request"}), 400
-    callsign = data.get("callsign", "").strip().upper()[:10]
+    callsign = data.get("callsign", "").strip().upper()[:12]
     try:
         with open(TRACKED_FILE, "w", encoding="utf-8") as f:
             json.dump({"callsign": callsign}, f)

@@ -119,10 +119,24 @@ def resolve_display_data(tracked_data, flights) -> dict | None:
         return data
 
     variants = _callsign_variants(data.get("callsign") or load_tracked_callsign() or "")
+    tracked_token = (load_tracked_callsign() or "").strip().upper()
+    tracked_reg = (data.get("registration") or "").strip().upper()
+    if tracked_token:
+        variants |= _callsign_variants(tracked_token)
+    if tracked_reg:
+        variants |= _callsign_variants(tracked_reg)
+    # Compact registration forms (CS-TPQ ↔ CSTPQ)
+    for token in (tracked_token, tracked_reg):
+        compact = "".join(ch for ch in token if ch.isalnum())
+        if compact:
+            variants.add(compact)
+
     live = None
     for flight in flights:
         fcs = (flight.get("callsign") or "").strip().upper()
-        if fcs in variants:
+        freg = (flight.get("registration") or "").strip().upper()
+        freg_compact = "".join(ch for ch in freg if ch.isalnum())
+        if fcs in variants or freg in variants or (freg_compact and freg_compact in variants):
             live = flight
             break
     if not live:

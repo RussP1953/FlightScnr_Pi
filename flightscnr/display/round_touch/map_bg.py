@@ -52,7 +52,7 @@ CARTO_TILE_WORKERS = 4
 OSM_TILE_WORKERS = 2
 VFR_TILE_WORKERS = 4
 CACHE_TTL_S = 7 * 24 * 3600
-CACHE_STYLE_VERSION = 16  # bump when map tint/placement/styles change
+CACHE_STYLE_VERSION = 17  # bump when map tint/placement/styles change
 
 
 _lock = threading.Lock()
@@ -99,8 +99,8 @@ def _resolved_provider() -> str:
     return _resolved_style()
 
 
-def _tile_url(z: int, x: int, y: int) -> str:
-    style = _resolved_style()
+def _tile_url(z: int, x: int, y: int, style: str | None = None) -> str:
+    style = normalize_map_style(style) if style else _resolved_style()
     if style == "dark":
         sub = CARTO_SUBDOMAINS[(x + y) % len(CARTO_SUBDOMAINS)]
         return CARTO_TILE_URL.format(sub=sub, style="dark_nolabels", z=z, x=x, y=y)
@@ -113,8 +113,8 @@ def _tile_url(z: int, x: int, y: int) -> str:
     return OSM_TILE_URL.format(z=z, x=x, y=y)
 
 
-def _tile_workers() -> int:
-    style = _resolved_style()
+def _tile_workers(style: str | None = None) -> int:
+    style = normalize_map_style(style) if style else _resolved_style()
     if style == "osm":
         return OSM_TILE_WORKERS
     if style == "vfr":
@@ -156,10 +156,10 @@ def _meters_per_pixel(lat_deg: float, zoom: int) -> float:
     )
 
 
-def _zoom_for_scale(home_lat: float, px_per_km: float) -> int:
+def _zoom_for_scale(home_lat: float, px_per_km: float, style: str | None = None) -> int:
     """Pick the zoom level whose ground resolution best matches the radar scale."""
     target_km_per_px = 1.0 / px_per_km
-    style = _resolved_style()
+    style = normalize_map_style(style) if style else _resolved_style()
     if style == "vfr":
         z_min, z_max = VFR_ZOOM_MIN, VFR_ZOOM_MAX
     else:
@@ -201,8 +201,14 @@ def _tile_nw_lat_lon(z: int, x: int, y: int) -> tuple[float, float]:
     return lat, lon
 
 
-def _fetch_tile(z: int, x: int, y: int, session: requests.Session) -> pygame.Surface | None:
-    url = _tile_url(z, x, y)
+def _fetch_tile(
+    z: int,
+    x: int,
+    y: int,
+    session: requests.Session,
+    style: str,
+) -> pygame.Surface | None:
+    url = _tile_url(z, x, y, style)
     for attempt in range(3):
         try:
             resp = session.get(url, timeout=20)
@@ -219,21 +225,22 @@ def _fetch_tile(z: int, x: int, y: int, session: requests.Session) -> pygame.Sur
 def _fetch_tile_coords(
     zoom: int,
     coords: list[tuple[int, int]],
+    style: str,
 ) -> dict[tuple[int, int], pygame.Surface]:
     """Download tiles in parallel (CARTO/FAA tolerate concurrent requests)."""
     if not coords:
         return {}
 
-    workers = min(_tile_workers(), len(coords))
+    style = normalize_map_style(style)
+    workers = min(_tile_workers(style), len(coords))
     results: dict[tuple[int, int], pygame.Surface] = {}
-    style = _resolved_style()
 
     def _download(tx: int, ty: int) -> tuple[int, int, pygame.Surface | None]:
         session = requests.Session()
         session.headers["User-Agent"] = USER_AGENT
         if style == "osm":
             time.sleep(OSM_TILE_DELAY_S)
-        return tx, ty, _fetch_tile(zoom, tx, ty, session)
+        return tx, ty, _fetch_tile(zoom, tx, ty, session, style)
 
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = [pool.submit(_download, tx, ty) for tx, ty in coords]
@@ -407,8 +414,8 @@ def _style_osm(surface: pygame.Surface) -> pygame.Surface:
     return tinted
 
 
-def _style_for_radar(surface: pygame.Surface) -> pygame.Surface:
-    style = _resolved_style()
+def _style_for_radar(surface: pygame.Surface, style: str | None = None) -> pygame.Surface:
+    style = normalize_map_style(style) if style else _resolved_style()
     if style == "dark":
         return _style_carto(surface)
     if style == "light":
@@ -430,7 +437,7 @@ def _apply_circle_mask(surface: pygame.Surface) -> pygame.Surface:
     return masked
 
 
-def _build_background(scale_index: int) -> pygame.Surface | None:
+def _build_background(scale_index: int, style: str | None = None) -> pygame.Surface | None:
     try:
         from config import LOCATION_HOME, location_configured
     except ImportError:
@@ -440,11 +447,13 @@ def _build_background(scale_index: int) -> pygame.Surface | None:
     if scale_index < 0 or scale_index >= len(scale.SCALE_BANDS):
         return None
 
-    provider = _resolved_style()
+    # Pin style for the whole build — never re-read settings mid-fetch.
+    # Otherwise switching Map while prewarm runs can save light tiles under a dark key.
+    provider = normalize_map_style(style) if style else _resolved_style()
     home_lat, home_lon = LOCATION_HOME[0], LOCATION_HOME[1]
     outer_km = scale.SCALE_BANDS[scale_index]["label_km"]
     px_per_km = theme.GRID_OUTER_RADIUS / outer_km
-    zoom = _zoom_for_scale(home_lat, px_per_km)
+    zoom = _zoom_for_scale(home_lat, px_per_km, provider)
 
     span_km = theme.VISIBLE_RADIUS / px_per_km
     lat_delta = span_km / 110.574
@@ -465,7 +474,7 @@ def _build_background(scale_index: int) -> pygame.Surface | None:
         for ty in range(y_min, y_max + 1)
         for tx in range(x_min, x_max + 1)
     ]
-    tiles = _fetch_tile_coords(zoom, coords)
+    tiles = _fetch_tile_coords(zoom, coords, provider)
 
     canvas = pygame.Surface((diameter, diameter))
     canvas.fill(theme.BG)
@@ -488,7 +497,7 @@ def _build_background(scale_index: int) -> pygame.Surface | None:
         zoom,
         span_km,
     )
-    canvas = _style_for_radar(canvas)
+    canvas = _style_for_radar(canvas, provider)
     canvas = _apply_circle_mask(canvas)
     return canvas
 
@@ -590,7 +599,8 @@ def _start_fetch(key: tuple):
 
 def _fetch_worker(key: tuple):
     try:
-        surface = _build_background(key[2])
+        # key = (lat, lon, scale_index, style) — use key style, not live settings.
+        surface = _build_background(key[2], style=key[3])
         if surface is None:
             return
         _save_cache(surface, key)
