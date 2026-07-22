@@ -12,6 +12,12 @@ A [round **4in touch display**](https://www.waveshare.com/4inch-dsi-lcd-c.htm?&a
 
 ---
 
+## Contributing
+
+Contributions are welcome. If you find a bug, have an idea, or want to improve the project, open a [pull request](https://github.com/yashmulgaonkar/FlightScnr_Pi/pulls). For larger changes, opening an [issue](https://github.com/yashmulgaonkar/FlightScnr_Pi/issues) first is helpful so we can discuss the approach.
+
+---
+
 ## What it does
 
 FlightScnr Pi shows live aircraft around your pre set location on a circular radar, with rich flight details when you tap a plane. It combines **FlightRadar24 (FR24)**, live positions from **[adsb.fi](https://adsb.fi)** (free cloud feed — no local ADS-B dongle), **Tomorrow.io weather**, and optional **AirLabs** schedule data. Settings, API keys, tracking, and updates are managed through a local web portal. No SSH required for day-to-day use.
