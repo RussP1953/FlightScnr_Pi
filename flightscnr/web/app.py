@@ -621,6 +621,7 @@ def radar_json():
             "range_value": scale.format_display_value(idx, units),
             "range_presets_mi": list(scale.PRESET_STATUTE_MILES),
             "min_height_ft": settings.min_height_ft(),
+            "max_height_ft": settings.max_height_ft(),
             "theme_index": settings.theme_index(),
             "theme_options": list(color_presets.THEME_NAMES),
             "show_compass_rose": settings.show_compass_rose(),
@@ -665,6 +666,8 @@ def radar_save():
         rainviewer_overlay.request_overlay()
     if "min_height_ft" in data:
         settings.set_min_height_ft(int(data.get("min_height_ft")))
+    if "max_height_ft" in data:
+        settings.set_max_height_ft(int(data.get("max_height_ft")))
     if "theme_index" in data:
         settings.set_theme_index(int(data.get("theme_index")))
     if "show_compass_rose" in data:

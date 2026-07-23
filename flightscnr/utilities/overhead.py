@@ -79,7 +79,6 @@ except ImportError:
 # Constants
 RETRIES = 3
 MAX_FLIGHT_LOOKUP = 5
-MAX_ALTITUDE = 100000
 EARTH_RADIUS_M = 3958.8
 ADSBDB_BASE = "https://api.adsbdb.com"
 
@@ -685,7 +684,8 @@ class Overhead:
             f"│ FR24 API Status:       {'✓ OK' if self._api.fr24_ok else '✗ UNREACHABLE'}",
             f"│ Zone flights (raw):    {stats.get('zone_raw', 0)}",
             f"│ After altitude filter: {stats.get('zone_filtered', 0)} "
-            f"(min={MIN_ALTITUDE}ft, max={MAX_ALTITUDE}ft)",
+            f"(min={stats.get('alt_min', MIN_ALTITUDE)}ft, "
+            f"max={stats.get('alt_max', '?')}ft)",
             f"│ Flights processed:     {stats.get('flights_processed', 0)}",
             f"│ Details fetched (API): {stats.get('details_fetched', 0)}",
             f"│ Details from cache:    {stats.get('details_cached', 0)}",
@@ -787,7 +787,15 @@ class Overhead:
                 search_zone = zone_from_radius_nm(search_radius_nm)
                 flights = self._api.get_flights(bounds=search_zone)
             stats["zone_raw"] = len(flights)
-            flights = [f for f in flights if MIN_ALTITUDE <= f.altitude < MAX_ALTITUDE]
+            # Live config bounds — settings sync mutates config.MIN/MAX at runtime.
+            import config as _cfg
+
+            stats["alt_min"] = getattr(_cfg, "MIN_ALTITUDE", 0)
+            stats["alt_max"] = getattr(_cfg, "MAX_ALTITUDE_FT", 100000)
+            flights = [
+                f for f in flights
+                if _cfg.passes_altitude_filter(f.altitude)
+            ]
             stats["zone_filtered"] = len(flights)
             flights.sort(key=lambda f: distance_from_flight_to_home(f))
             zone_flights_all = flights
