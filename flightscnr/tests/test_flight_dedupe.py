@@ -131,6 +131,79 @@ class TestFlightDedupe(unittest.TestCase):
         self.assertEqual(len(out), 1)
         self.assertEqual(out[0]["plane"], "RV8")
 
+    def test_dedupe_merges_stale_fr24_with_blank_adsb(self):
+        """FR24 lag can put the icon several km from live ADS-B (QTR5Q/QR737 case)."""
+        from utilities import aircraft_alert
+
+        fr24 = {
+            "callsign": "QTR5Q",
+            "flight_number": "QR737",
+            "plane": "A35K",
+            "plane_latitude": 37.55,
+            "plane_longitude": -122.25,
+            "altitude": 5900,
+            "data_source": "fr24_grpc",
+            "origin": "DOH",
+            "destination": "SFO",
+            "airline": "Qatar Airways",
+        }
+        adsb = {
+            "callsign": "",
+            "plane": "",
+            "plane_latitude": 37.48,
+            "plane_longitude": -122.38,
+            "altitude": 5900,
+            "data_source": "adsb_fi",
+            "icao_hex": "06A123",
+        }
+        with mock.patch.object(aircraft_alert.geo, "distance_km", return_value=12.0):
+            out = aircraft_alert.dedupe_flights([fr24, adsb])
+        self.assertEqual(len(out), 1)
+        merged = out[0]
+        self.assertEqual(merged.get("callsign"), "QTR5Q")
+        self.assertEqual(merged.get("plane"), "A35K")
+        # ADS-B kinematics win on the FR24 metadata shell.
+        self.assertEqual(merged.get("plane_latitude"), 37.48)
+        self.assertEqual(merged.get("icao_hex"), "06A123")
+
+    def test_dedupe_keeps_cross_feed_with_conflicting_callsigns(self):
+        from utilities import aircraft_alert
+
+        fr24 = {
+            "callsign": "QTR5Q",
+            "plane": "A35K",
+            "plane_latitude": 37.55,
+            "plane_longitude": -122.25,
+            "altitude": 5900,
+            "data_source": "fr24_grpc",
+        }
+        adsb = {
+            "callsign": "UAL100",
+            "plane": "B739",
+            "plane_latitude": 37.48,
+            "plane_longitude": -122.38,
+            "altitude": 5900,
+            "data_source": "adsb_fi",
+            "icao_hex": "A12345",
+        }
+        with mock.patch.object(aircraft_alert.geo, "distance_km", return_value=12.0):
+            out = aircraft_alert.dedupe_flights([fr24, adsb])
+        self.assertEqual(len(out), 2)
+
+    def test_callsign_keys_icao_to_iata(self):
+        from utilities.aircraft_alert import callsign_match_keys
+
+        keys = callsign_match_keys("QTR5Q")
+        self.assertIn("QTR5Q", keys)
+        self.assertIn("QR5Q", keys)
+
+    def test_identity_keys_include_flight_number(self):
+        from utilities.aircraft_alert import flights_share_identity
+
+        fr24 = {"callsign": "QTR5Q", "flight_number": "QR737", "icao_hex": ""}
+        adsb = {"callsign": "QR737", "icao_hex": ""}
+        self.assertTrue(flights_share_identity(fr24, adsb))
+
 
 if __name__ == "__main__":
     unittest.main()

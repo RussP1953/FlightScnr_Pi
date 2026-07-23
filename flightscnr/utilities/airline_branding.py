@@ -52,6 +52,7 @@ IATA_TO_ICAO = {
     "EI": "EIN",
     "AY": "FIN",
     "AC": "ACA",
+    "QR": "QTR",
 }
 
 

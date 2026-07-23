@@ -1067,8 +1067,9 @@ class Overhead:
                     callsign_match_keys,
                     dedupe_flights,
                     flight_identity_keys,
-                    flights_share_identity,
+                    flights_match_by_position,
                     merge_live_fields,
+                    position_merge_threshold_km,
                 )
 
                 def _maybe_feed_enrich(flight_dict: dict) -> None:
@@ -1158,17 +1159,11 @@ class Overhead:
                                     if elat is None or elon is None:
                                         continue
                                     d = geo.distance_km(lat, lon, elat, elon)
-                                    if d > 1.2:
+                                    max_d = position_merge_threshold_km(entry, existing)
+                                    if d > max_d:
                                         continue
-                                    same_type = (
-                                        (entry.get("plane") or "").strip().upper()
-                                        and (entry.get("plane") or "").strip().upper()
-                                        == (existing.get("plane") or "").strip().upper()
-                                    )
-                                    if (
-                                        d <= 0.45
-                                        or same_type
-                                        or flights_share_identity(entry, existing)
+                                    if flights_match_by_position(
+                                        entry, existing, dist_km=d
                                     ):
                                         if best_d is None or d < best_d:
                                             best_d = d

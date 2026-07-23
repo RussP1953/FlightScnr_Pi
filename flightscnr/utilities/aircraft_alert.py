@@ -85,15 +85,22 @@ def callsign_match_keys(callsign: str) -> frozenset[str]:
     if not cs:
         return frozenset()
     keys = {cs}
+    try:
+        from utilities.airline_branding import IATA_TO_ICAO
+    except ImportError:
+        IATA_TO_ICAO = {}
+    # IATA → ICAO (UA123 → UAL123)
     if len(cs) >= 3 and cs[:2].isalpha() and cs[2].isdigit():
-        try:
-            from utilities.airline_branding import IATA_TO_ICAO
-
-            icao = IATA_TO_ICAO.get(cs[:2])
-            if icao:
-                keys.add(icao + cs[2:])
-        except ImportError:
-            pass
+        icao = IATA_TO_ICAO.get(cs[:2])
+        if icao:
+            keys.add(icao + cs[2:])
+    # ICAO → IATA (UAL123 → UA123)
+    if len(cs) >= 4 and cs[:3].isalpha() and cs[3].isdigit():
+        icao_prefix = cs[:3]
+        for iata, icao in IATA_TO_ICAO.items():
+            if icao == icao_prefix:
+                keys.add(iata + cs[3:])
+                break
     return frozenset(keys)
 
 
@@ -153,11 +160,12 @@ def flight_identity_keys(flight: dict) -> frozenset[str]:
         keys.add(f"reg:{reg}")
         for cs in callsign_match_keys(reg):
             keys.add(f"cs:{cs}")
-    for cs in callsign_match_keys(flight.get("callsign")):
-        keys.add(f"cs:{cs}")
-        # ADS-B often puts the N-number in the flight/callsign field.
-        if len(cs) >= 2 and cs[0] == "N" and cs[1].isdigit():
-            keys.add(f"reg:{cs}")
+    for field in ("callsign", "flight_number", "number"):
+        for cs in callsign_match_keys(flight.get(field)):
+            keys.add(f"cs:{cs}")
+            # ADS-B often puts the N-number in the flight/callsign field.
+            if len(cs) >= 2 and cs[0] == "N" and cs[1].isdigit():
+                keys.add(f"reg:{cs}")
     return frozenset(keys)
 
 
@@ -165,6 +173,119 @@ def flights_share_identity(a: dict, b: dict) -> bool:
     left = flight_identity_keys(a)
     right = flight_identity_keys(b)
     return bool(left and right and (left & right))
+
+
+# FR24 zone positions often lag ADS-B by several km; allow a wider match when
+# altitude agrees and hard identities do not conflict.
+_CROSS_FEED_THRESHOLD_KM = 15.0
+_ALT_MATCH_FT = 500.0
+
+
+def _source_kind(flight: dict) -> str:
+    src = (flight.get("data_source") or "").strip().lower()
+    if src.startswith("fr24"):
+        return "fr24"
+    if src == "dump1090" or src.startswith("adsb"):
+        return "adsb"
+    return "other"
+
+
+def is_cross_feed_pair(a: dict, b: dict) -> bool:
+    return {_source_kind(a), _source_kind(b)} == {"fr24", "adsb"}
+
+
+def identity_hard_conflict(a: dict, b: dict) -> bool:
+    """True when both sides assert incompatible hex or registration."""
+    left = flight_identity_keys(a)
+    right = flight_identity_keys(b)
+    for prefix in ("hex:", "reg:"):
+        group_a = {k for k in left if k.startswith(prefix)}
+        group_b = {k for k in right if k.startswith(prefix)}
+        if group_a and group_b and group_a.isdisjoint(group_b):
+            return True
+    return False
+
+
+def _altitude_ft(flight: dict) -> float | None:
+    try:
+        return float(flight.get("altitude"))
+    except (TypeError, ValueError):
+        return None
+
+
+def _altitudes_match(a: dict, b: dict, *, tol_ft: float = _ALT_MATCH_FT) -> bool:
+    alt_a = _altitude_ft(a)
+    alt_b = _altitude_ft(b)
+    if alt_a is None or alt_b is None:
+        return False
+    return abs(alt_a - alt_b) <= tol_ft
+
+
+def _callsign_keys(flight: dict) -> frozenset[str]:
+    keys: set[str] = set()
+    for field in ("callsign", "flight_number", "number"):
+        keys |= set(callsign_match_keys(flight.get(field)))
+    return frozenset(keys)
+
+
+def _types_compatible(a: dict, b: dict) -> bool:
+    type_a = "".join(str(a.get("plane") or "").upper().split())
+    type_b = "".join(str(b.get("plane") or "").upper().split())
+    if type_a and type_b and type_a != type_b:
+        return False
+    return True
+
+
+def position_merge_threshold_km(a: dict, b: dict, *, near_km: float = 1.2) -> float:
+    """Max separation for proximity-based FR24↔ADS-B merge."""
+    if not is_cross_feed_pair(a, b):
+        return near_km
+    if identity_hard_conflict(a, b):
+        return near_km
+    if not _altitudes_match(a, b):
+        return near_km
+    if not _types_compatible(a, b):
+        return near_km
+    keys_a = _callsign_keys(a)
+    keys_b = _callsign_keys(b)
+    # Extended radius only when at least one side lacks a callsign, or they agree.
+    # Disagreeing callsigns (QTR5Q vs N653ND) stay on the tight threshold.
+    if keys_a and keys_b and keys_a.isdisjoint(keys_b):
+        return near_km
+    return _CROSS_FEED_THRESHOLD_KM
+
+
+def flights_match_by_position(
+    a: dict,
+    b: dict,
+    *,
+    dist_km: float | None = None,
+    near_km: float = 1.2,
+) -> bool:
+    """True when proximity (+ cues) say these are the same airframe."""
+    if identity_hard_conflict(a, b):
+        return False
+    lat = a.get("plane_latitude")
+    lon = a.get("plane_longitude")
+    elat = b.get("plane_latitude")
+    elon = b.get("plane_longitude")
+    if lat is None or lon is None or elat is None or elon is None:
+        return False
+    if dist_km is None:
+        dist_km = geo.distance_km(lat, lon, elat, elon)
+    max_km = position_merge_threshold_km(a, b, near_km=near_km)
+    if dist_km > max_km:
+        return False
+    # Tight proximity alone is enough (classic dual-feed overlap).
+    if dist_km <= 0.45:
+        return True
+    type_a = "".join(str(a.get("plane") or "").upper().split())
+    type_b = "".join(str(b.get("plane") or "").upper().split())
+    if type_a and type_b and type_a == type_b:
+        return True
+    if _altitudes_match(a, b):
+        return True
+    return False
 
 
 ADSB_ALERT_FIELDS = ("squawk", "db_flags")
@@ -212,37 +333,10 @@ def dedupe_flights(flights: list[dict], *, threshold_km: float = 1.2) -> list[di
             score += 1
         return score
 
-    def _alt_ft(flight: dict) -> float | None:
-        try:
-            return float(flight.get("altitude"))
-        except (TypeError, ValueError):
-            return None
-
     def _are_duplicates(a: dict, b: dict) -> bool:
         if flights_share_identity(a, b):
             return True
-        lat = a.get("plane_latitude")
-        lon = a.get("plane_longitude")
-        elat = b.get("plane_latitude")
-        elon = b.get("plane_longitude")
-        if lat is None or lon is None or elat is None or elon is None:
-            return False
-        dist = geo.distance_km(lat, lon, elat, elon)
-        if dist > threshold_km:
-            return False
-        # Tight proximity alone is enough (classic dual-feed overlap).
-        if dist <= 0.45:
-            return True
-        # Looser proximity needs a supporting cue so formation pairs stay separate.
-        type_a = "".join(str(a.get("plane") or "").upper().split())
-        type_b = "".join(str(b.get("plane") or "").upper().split())
-        if type_a and type_b and type_a == type_b:
-            return True
-        alt_a = _alt_ft(a)
-        alt_b = _alt_ft(b)
-        if alt_a is not None and alt_b is not None and abs(alt_a - alt_b) <= 500:
-            return True
-        return False
+        return flights_match_by_position(a, b, near_km=threshold_km)
 
     kept: list[dict] = []
     for flight in flights:
