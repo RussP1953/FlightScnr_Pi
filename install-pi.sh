@@ -420,6 +420,10 @@ fix_repo_permissions() {
 }
 
 start_service() {
+    if [ "${FLIGHTSCNR_SKIP_RESTART:-}" = "1" ]; then
+        log_ok "Skipped service restart (FLIGHTSCNR_SKIP_RESTART=1)"
+        return 0
+    fi
     log_step "Starting $SERVICE_NAME"
     systemctl restart "$SERVICE_NAME"
     sleep 2
@@ -518,6 +522,14 @@ cmd_install() {
 }
 
 cmd_update() {
+    local no_start=0
+    for arg in "$@"; do
+        case "$arg" in
+            --no-start) no_start=1 ;;
+            *) echo "Unknown option: $arg" >&2; exit 1 ;;
+        esac
+    done
+
     setup_paths
 
     echo "============================================"
@@ -541,12 +553,17 @@ cmd_update() {
     fi
     log_ok "Git pull complete ($(git -C "$REPO_ROOT" log --oneline -1))"
 
+    local install_args=(--skip-apt)
+    if [ "$no_start" -eq 1 ]; then
+        install_args+=(--no-start)
+    fi
+
     if [ "$(id -u)" -ne 0 ]; then
         echo ""
         echo "Re-syncing install (needs root)..."
-        exec sudo bash "$REPO_ROOT/install-pi.sh" install --skip-apt
+        exec sudo bash "$REPO_ROOT/install-pi.sh" install "${install_args[@]}"
     else
-        cmd_install --skip-apt
+        cmd_install "${install_args[@]}"
     fi
 }
 
@@ -555,8 +572,9 @@ usage() {
 Usage:
   sudo bash install-pi.sh [install] [--no-start] [--skip-apt]
       First install or full re-sync (includes apt packages)
-  bash install-pi.sh update
+  bash install-pi.sh update [--no-start]
       git pull + re-sync + restart (skips apt for speed)
+      --no-start  skip service restart (portal update schedules it after status write)
 
 EOF
 }
@@ -571,7 +589,8 @@ case "${1:-install}" in
         cmd_install "$@"
         ;;
     update)
-        cmd_update
+        shift
+        cmd_update "$@"
         ;;
     -h|--help|help)
         usage
